@@ -1,0 +1,8 @@
+# dsh-stealthily-read bundle patch（dsh.bundle.patch：顶层数组 loader patch entries）
+# 安装：plugin_manager install_bundle，target 指向本目录的绝对路径。
+#
+# 只插入一个 Host 行；浏览器那一半由 package.json 的 dsh.client 声明，
+# client-modules 会把它作为 /plugins 下的 bundle 提供给页面。
+- insert:
+    - id: stealthily-read
+      name: dsh-stealthily-read

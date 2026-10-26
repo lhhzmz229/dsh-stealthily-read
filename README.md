@@ -1,0 +1,147 @@
+# dsh-stealthily-read
+
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f6ef7)](https://github.com/lhhzmz229/dsh-stealthily-read)
+[![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+
+DSH（DeepSeek Harness）插件：把 txt 小说传进设置页，然后在会话上方用一个**无边框、可拖拽、能完全透明**的阅读窗偷偷看。
+
+参考了 uTools 的「摸鱼阅读」：入口收在设置里，浮层贴在工作界面上，老板键一键消失。
+
+> 界面上没有任何「阅读」按钮，所有参数都在 设置 → 阅读 里。日常靠老板键进出。
+
+## 快速开始
+
+```bash
+git clone https://github.com/lhhzmz229/dsh-stealthily-read.git
+```
+
+然后在 DSH 里用 Plugin Manager 的「安装本地目录」指向这个目录，或者：
+
+```bash
+dsh plugin --profile desktop add "link:/绝对路径/dsh-stealthily-read"
+```
+
+装完刷新一次页面。接着 设置 → 阅读 → 上传 txt，按老板键（默认 `Alt + \``）唤出阅读窗。
+
+## 它做什么
+
+**设置 → 阅读**（设置里唯一的入口，界面上不再有任何「阅读」按钮）：
+
+- 拖拽或点击上传 `.txt`（支持多选），自动识别 UTF-8 / GBK(GB18030) / UTF-16，按「第 N 章 / 序章 / 楔子 / 番外 / Chapter N」切章；
+- **书架是卡片墙**：封面 + 书名，封面缺省时用书名排版；右上角 `txt` 角标，正在读的带绿色「正在读」角标，读过的显示一条进度条；卡片上有一排分类筛选（全部 / 各分类）；
+- **右键菜单**（对着卡片右键）：搜索跳转、章节列表、更换本地文件、设置分类、设置封面、删除书籍；
+- **章节跳转**：右键「章节列表」弹出全部章节，点哪章从哪章开始读；右键「搜索跳转」输入关键词，列出命中的章节 + 上下文片段，点一条直接跳过去；
+- 点卡片直接开始阅读；
+- **文字**：字体（预设 + 任意字体名）、字号、字重、字距、行距、内边距、首行缩进、文字颜色（跟随界面 / 自定义）、文字描边；
+- **背景**：背景颜色 + 背景不透明度，两个颜色都带**取色器**（原生颜色盘 + 屏幕吸色）；
+- **行为**：工具栏形态（悬停 / 常显 / 隐藏）、标题栏是否显示书名、自动滚动、窗口宽高；
+- **隐私**：老板键（默认 `Alt + \``）、鼠标移出自动隐藏。
+
+**阅读窗**（`shell.overlay` 席位）——**无边框 + 自动分页**：
+
+- 没有 border、没有圆角轮廓、没有阴影，标题栏和底栏**都没有底色**，所以透明时看不到任何「框」；
+- 默认背景不透明度就是 **0**：开箱即全透明，只剩文字浮在页面上；
+- **按当前窗口宽高自动分页**：整章所有段落一次性排进测量容器（挂进正文节点内部，继承链与渲染完全一致），一次布局后读每段的真实高度；段间距读**真实 computed `margin-bottom`**，章标题高度也实测（含它的下边距）。页内占用 = `段高 + 间距`，页内第一段不加间距。分页结果按「章 + 尺寸 + 字体样式」缓存，翻回去不重算；
+- 原文里的**连续空行不会变成额外间距**：段落按 `\n+` 切分后空行已被合并，段与段之间只有统一的一个段间距，所以「原文隔了很多行」不会让某一页空出一大块；
+- `.page` 不再 `overflow: hidden`：分页已保证放得下，留裁切只会在亚像素误差时切掉最后半行——现在宁可露出一点，也不丢字；
+- **点击翻页**：右半边下一页、左半边上一页；**滚轮**上下翻页（有 160ms 节流，不会一下翻好几页）；也可以只保留滚轮，避免误点；
+- 翻到本章最后一页再往前会自动进入下一章，往回翻到第一页会进入上一章的最后一页；
+- `←` `→` 翻页，`PgUp` / `PgDn` 翻章，`Esc` 隐藏，老板键随时藏起来；
+- **整个框都能拖**（和 uTools「摸鱼阅读」一样）：正文、标题栏、空白处随便按哪里都能拖，不用先找到标题栏；鼠标移上去就是抓取手型；
+- **没有缩放手柄**：宽高统一在设置里调（「阅读窗 → 宽度 / 高度」），框内任何位置都只负责拖动，不会再出现「提示可拖却拖不动」的误导；
+- 拖动时**完全不经过 React**：只改元素自身的 `left/top/width/height`，浏览器只做合成，松手才写一次 state 并落盘——这是「丝滑」的关键；
+- 拖拽用**指针捕获**（`setPointerCapture`），指针甩出窗口也不会断；
+- 有 **4px 阈值**：移动不到 4px 就当「点一下」，照常翻页；真拖过才吞掉随后的点击。
+
+## 字体和续读
+
+- **字体默认跟随会话正文**：用 `--dsw-font-markdown-base-font-family` / `-font-size` / `-line-height` 这几个宿主 token，所以阅读窗里的字和聊天区是同一套。想换字体或字号可以在设置里覆盖，滑块拉到 0 就回到「跟随会话」。
+- **下次进来接着读**：进度按「第几章 + 第几页 + 总页数」保存。重新打开、刷新页面、甚至重启 DSH 之后都停在同一页。如果中间改过字号或窗口大小导致页数变了，会按比例折算到相近位置，不会跳回开头。
+
+## 取色器怎么用
+
+设置页里「文字颜色」和「背景颜色」各有一组：
+
+- 左边方块：点开是系统颜色盘；
+- 中间：直接填 `#rrggbb`；
+- 右边 🖉：**屏幕取色**，点一下再点页面上任意位置，直接吸那个像素的颜色（Chromium 系的 `EyeDropper`；不支持的浏览器这个按钮不显示）。
+
+## 为什么没有左栏按钮
+
+一个写着「偷偷阅读」的图标本身就是暴露点。入口只在设置里，日常靠老板键进出。
+
+## 安装
+
+在 DSH 里用 Plugin Manager 安装本目录（`plugin_manager` 的 `install_bundle`，target 指向本目录绝对路径），或在 profile 里：
+
+```bash
+dsh plugin --profile desktop add "link:/绝对路径/dsh-stealthily-read"
+```
+
+装完刷新一次页面（首次加载新 bundle 需要页面拿到新的模块图）。
+
+## 数据存放
+
+```
+${DSH_HOME}/stealthily-read/
+  books/<id>.json     元数据 + 章节字符区间
+  books/<id>.txt      归一化后的 UTF-8 正文
+  state.json          阅读进度 + 阅读窗偏好
+```
+
+`DSH_HOME` 默认是 `~/.dsh`。删除一本书会同时删掉这两个文件。
+
+## HTTP 路由
+
+插件前缀路由 `/dsh-stealthily-read/api`，每个请求都先过 `ctx.connection.requestRejection`（Host / Origin / 浏览器凭据），与宿主自带接口同一套栅栏。
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/state` | 书架列表 + 进度 + 阅读窗偏好 |
+| POST | `/state` | 合并写入 `activeBookId` / `progress` / `overlay` |
+| POST | `/books` | 上传（`{ name, title, dataBase64 }`，≤ 20 MiB） |
+| GET | `/books/<id>/chapter?index=N` | 单章正文 + 全部章节标题 |
+| GET | `/books/<id>/toc` | 只要章节标题（章节跳转用） |
+| GET | `/books/<id>/search?q=…` | 全书搜索，返回命中章节 + 片段 |
+| POST | `/books/<id>/meta` | 改书名 / 分类 / 封面（封面只收 data URL） |
+| POST | `/books/<id>/replace` | 换本地文件，保留 id / 分类 / 封面 / 进度 |
+| POST | `/books/<id>/progress` | 写进度；`{ clear: true }` 从头开始 |
+| POST | `/books/<id>/delete` | 删除这本书 |
+
+## 边界
+
+- 只处理 `.txt`；单本上限 20 MiB，超了请在外部先拆分。
+- 章节识别是行首正则加「标记之后必须是空/分隔符/短标题」，正文里 `第二章正文。` 这种不会被误判成标题。
+- 没有章节标题的书按每 3000 字切段。
+- 这是纯阅读界面，**不注册任何模型工具**：模型看不到你上传的小说。
+
+## 开发
+
+```bash
+# 三个离线自检，不需要启动 DSH
+node test/host-selftest.mjs      # 上传 / 编码 / 切章 / 目录 / 搜索 / 元数据 / 换文件
+node test/paginate-selftest.mjs  # 分页：不丢字、不超容量、每页填满、切段混排
+node test/client-selftest.mjs    # bundle 形态、席位注册、无边框、拖拽、hook 顺序
+```
+
+目录结构：
+
+```
+index.js            Host 半：HTTP 路由 + 本地书库（books/<id>.txt + <id>.json）
+client.js           浏览器半：设置页书架 + shell.overlay 阅读窗
+cordis.patch.yml    bundle patch（插入 stealthily-read 行）
+locale/{zh,en}.json 插件管理器的标题/描述
+icon.svg            插件图标
+test/               三个离线自检
+```
+
+改完 `client.js` 不需要重启 DSH，页面会通过 HMR 拿到新 bundle；改 `index.js`（Host 半）需要重启宿主。
+
+## 卸载
+
+在 Plugin Manager 里停用 / 移除本 bundle。数据目录不会自动删除，需要的话手动删 `${DSH_HOME}/stealthily-read`。
+
+## License
+
+[MIT](./LICENSE)

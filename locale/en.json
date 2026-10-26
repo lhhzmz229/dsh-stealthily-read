@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "Reading",
+    "description": "Upload a .txt novel in Settings and read it in a draggable, fully transparent window over the conversation, with a boss key to hide it instantly."
+  },
+  "nav": "Reading",
+  "title": "Reading",
+  "description": "Upload a .txt novel and read it in a floating window over the conversation."
+}

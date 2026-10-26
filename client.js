@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
         const zh = {
             nav: '阅读',
             title: '阅读',
-            description: '上传 txt 小说，用无边框的浮层在页面上分页阅读。',
+            description: '上传 txt 文本，用无边框的浮层在页面上分页阅读。',
             upload: '上传 txt',
             uploading: '正在解析…',
             dropHint: '把 .txt 拖到这里，或点「上传 txt」选择文件',
@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
             hide: '隐藏',
             show: '显示阅读窗',
             hideWindow: '隐藏阅读窗',
-            noBook: '还没有小说。到 设置 → 阅读 上传一本 txt。',
+            noBook: '还没有文本。到 设置 → 阅读 上传一个 txt。',
             loading: '加载中…',
             uploadFailed: '上传失败',
             tooLarge: '文件超过 20 MB，请先拆分',

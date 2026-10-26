@@ -1,9 +1,9 @@
 {
   "meta": {
     "title": "Reading",
-    "description": "Upload a .txt novel in Settings and read it in a draggable, fully transparent window over the conversation, with a boss key to hide it instantly."
+    "description": "Open txt files in a floating reader with pagination and saved progress."
   },
   "nav": "Reading",
   "title": "Reading",
-  "description": "Upload a .txt novel and read it in a floating window over the conversation."
+  "description": "Open a txt file in a floating reader."
 }

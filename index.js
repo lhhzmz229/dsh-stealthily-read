@@ -350,6 +350,26 @@ class Library {
     }
 
     /**
+     * 用**当前的分章规则**重新解析一本书，不改正文、不需要重新上传。
+     *
+     * 场景：分章规则改进后（比如新增「N、标题」识别），已上传的书还是旧的切法，
+     * 让用户删掉重传一本 9 MB 的 txt 太折腾。这个接口直接拿已存的正文重算章节。
+     * 阅读进度会重置（旧章号和新章节对不上），但分类 / 封面 / 书名都保留。
+     */
+    async rechunk(id) {
+        const meta = await this.readMeta(id);
+        const text = await fs.readFile(path.join(this.booksDir, `${id}.txt`), 'utf8');
+        const chapters = splitChapters(text);
+        meta.chapters = chapters;
+        meta.updatedAt = new Date().toISOString();
+        await fs.writeFile(path.join(this.booksDir, `${id}.json`), JSON.stringify(meta), 'utf8');
+        this.cache.set(id, { meta, text });
+        // 旧进度基于旧章号，重算后必须清掉，否则会停在错误的章
+        await this.clearProgress(id);
+        return { meta: this.publicMeta(meta), chapters: chapters.length };
+    }
+
+    /**
      * 全书搜索：返回命中的章节下标 + 前后文片段。
      * 只在内存里扫一遍已载入的正文，最多返回 limit 条。
      */
@@ -550,12 +570,22 @@ function makeHandler(library, getConnection) {
                 return sendJson(res, 200, { ok: true, book });
             }
 
-            const bookRoute = /^books\/([^/]+)(?:\/(chapter|delete|progress|meta|replace|search|toc))?$/.exec(route);
+            const bookRoute = /^books\/([^/]+)(?:\/(chapter|delete|progress|meta|replace|search|toc|rechunk))?$/.exec(route);
             if (bookRoute) {
                 const id = bookRoute[1];
                 const action = bookRoute[2] || '';
                 if (!isBookId(id)) {
                     return sendJson(res, 400, { ok: false, code: 'BAD_ID', message: '小说 id 不合法' });
+                }
+
+                // 用当前规则重新分章：不重新上传，直接拿已存正文重算
+                if (action === 'rechunk' && method === 'POST') {
+                    try {
+                        const result = await library.rechunk(id);
+                        return sendJson(res, 200, { ok: true, book: result.meta, chapters: result.chapters });
+                    } catch {
+                        return sendJson(res, 404, { ok: false, code: 'NOT_FOUND', message: '找不到这本小说' });
+                    }
                 }
 
                 // 目录：只要章节标题，给「章节列表 / 章节跳转」用

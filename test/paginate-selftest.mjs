@@ -113,6 +113,7 @@ const factory = new Function(
     'document',
     'window',
     'MEASURE_BATCH',
+    'MEASURE_MAX_PARAGRAPHS',
     'yieldToMain',
     // new Function 的函数体不是 async，所以要自己包一层 async IIFE 把 paginate 暴露出来
     `return (async () => {\n${extractFunction('paginate')}\nreturn paginate;\n})();`,
@@ -120,6 +121,8 @@ const factory = new Function(
 
 // 每批测量段数：取小一点，让测试能真正走多批路径（验证分批逻辑）
 const MEASURE_BATCH = 3;
+// 精确测量上限：测试里设大一些，不影响小样本的分页结果
+const MEASURE_MAX_PARAGRAPHS = 100000;
 // 让出主线程：测试里用微任务即可，不真的等 setTimeout
 const yieldToMain = () => Promise.resolve();
 
@@ -136,7 +139,7 @@ const strip = (text) => text.replace(/\s/g, '');
 const WIDTH = 320;
 const HEIGHT = 220;
 
-const paginate = await factory(makeFakeDocument(WIDTH), fakeWindow, MEASURE_BATCH, yieldToMain);
+const paginate = await factory(makeFakeDocument(WIDTH), fakeWindow, MEASURE_BATCH, MEASURE_MAX_PARAGRAPHS, yieldToMain);
 
 // ---- 1. 不丢字、不重字 ----
 const paragraphs = Array.from({ length: 12 }, (_, i) => `第${i + 1}段：` + '正文内容'.repeat(18));
@@ -236,7 +239,7 @@ assert.equal(strip(edge.flat().join('')), strip(longPara), '跨页段落不能�
         return Promise.resolve();
     };
     const longDoc = makeFakeDocument(WIDTH);
-    const longPaginate = await factory(longDoc, fakeWindow, MEASURE_BATCH, countingYield);
+    const longPaginate = await factory(longDoc, fakeWindow, MEASURE_BATCH, MEASURE_MAX_PARAGRAPHS, countingYield);
 
     // 段落数远大于每批上限，必然走多批
     const manyParagraphs = Array.from({ length: 40 }, (_, i) => `第${i + 1}段：` + '正文'.repeat(10));

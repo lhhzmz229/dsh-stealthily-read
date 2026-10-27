@@ -137,6 +137,8 @@ window.__ModuleLoader__.load({
             menuSearch: '搜索跳转',
             menuChapters: '章节列表',
             menuReplace: '更换本地文件',
+            menuRechunk: '重新分章',
+            rechunked: '已重新分章：共 {count} 章',
             menuCategory: '设置分类',
             menuCover: '设置封面',
             menuDelete: '删除书籍',
@@ -253,6 +255,8 @@ window.__ModuleLoader__.load({
             menuSearch: 'Search & jump',
             menuChapters: 'Chapter list',
             menuReplace: 'Replace local file',
+            menuRechunk: 'Re-split chapters',
+            rechunked: 'Re-split into {count} chapters',
             menuCategory: 'Set category',
             menuCover: 'Set cover',
             menuDelete: 'Delete book',
@@ -775,6 +779,15 @@ window.__ModuleLoader__.load({
         const MEASURE_BATCH = 120;
 
         /**
+         * 最多精确测量多少段；超出部分按平均高度估算。
+         *
+         * 正常章节只有几十到几百段，这个上限根本碰不到。
+         * 它防的是「一章 8 万段」这种异常情况——旧分章规则把整本书切成一章时就会出现，
+         * 精确测量要 700 多批，切一章几十秒，页面等于卡死。
+         */
+        const MEASURE_MAX_PARAGRAPHS = 4000;
+
+        /**
          * 让出主线程一次。
          *
          * 用 `setTimeout(0)` 而不是 `await Promise.resolve()`：后者只是微任务，
@@ -875,9 +888,15 @@ window.__ModuleLoader__.load({
                 }
 
                 // ---- 阶段 1：分批测量每段真实高度 ----
+                //
+                // 保护：如果一章段落数超过 MEASURE_MAX_PARAGRAPHS（旧分章规则可能
+                // 把整本书切成一个 8 万段的巨型章节），就只精确测量前一部分，
+                // 剩下的按已测段的平均高度估算。
+                // 否则 700 多批 × 每批一次布局，切一章要几十秒，页面等于卡死。
+                const measureCount = Math.min(paragraphs.length, MEASURE_MAX_PARAGRAPHS);
                 const heights = new Array(paragraphs.length).fill(0);
-                for (let start = 0; start < paragraphs.length; start += MEASURE_BATCH) {
-                    const end = Math.min(paragraphs.length, start + MEASURE_BATCH);
+                for (let start = 0; start < measureCount; start += MEASURE_BATCH) {
+                    const end = Math.min(measureCount, start + MEASURE_BATCH);
                     const batch = [];
                     for (let i = start; i < end; i += 1) batch.push(makeProbe(paragraphs[i]));
                     // 先让浏览器把这一批排好版，再一次读全部高度（一次布局）
@@ -891,7 +910,20 @@ window.__ModuleLoader__.load({
                     }
                     for (const node of batch) host.removeChild(node);
                     // 让出主线程：下一批不会和这一批挤在同一帧
-                    if (end < paragraphs.length) await yieldToMain();
+                    if (end < measureCount) await yieldToMain();
+                }
+                // 超出精确测量范围的段落，用平均高度补齐
+                if (measureCount < paragraphs.length) {
+                    let sum = 0;
+                    let n = 0;
+                    for (let i = 0; i < measureCount; i += 1) {
+                        if (heights[i] > 0) {
+                            sum += heights[i];
+                            n += 1;
+                        }
+                    }
+                    const avg = n > 0 ? sum / n : 24;
+                    for (let i = measureCount; i < paragraphs.length; i += 1) heights[i] = avg;
                 }
 
                 // ---- 阶段 2：纯算术切页（无 DOM） ----
@@ -930,6 +962,9 @@ window.__ModuleLoader__.load({
                 let current = [];
                 // 当前页已用像素；第一页先扣掉章标题（含它的下边距）
                 let used = headingPx;
+                // 阶段 2 也要周期性让出：跨页段落会调 fitChars（改 DOM + 测量），
+                // 一章几百个跨页段落时，同步跑完同样会卡住主线程。
+                let sinceYield = 0;
 
                 for (let index = 0; index < paragraphs.length; index += 1) {
                     let text = paragraphs[index];
@@ -960,6 +995,12 @@ window.__ModuleLoader__.load({
                             used = 0;
                             text = text.slice(fit).replace(/^[\s\u3000]+/, '');
                             ownHeight = measure(text);
+                            // 每切 40 段让出一次，避免长章节把主线程占满
+                            sinceYield += 1;
+                            if (sinceYield >= 40) {
+                                sinceYield = 0;
+                                await yieldToMain();
+                            }
                             continue;
                         }
 
@@ -1516,6 +1557,19 @@ window.__ModuleLoader__.load({
                 if (replaceRef.current) replaceRef.current.click();
             };
 
+            /** 用当前规则重新分章：不用重新上传大文件 */
+            const rechunkBook = async (book) => {
+                setError('');
+                setNotice('');
+                try {
+                    const data = await postJson(`books/${encodeURIComponent(book.id)}/rechunk`, {});
+                    await reload();
+                    setNotice(t('rechunked', { count: data.chapters }));
+                } catch (e) {
+                    setError(String(e?.message || e));
+                }
+            };
+
             const onCoverPicked = async (event) => {
                 const file = event.target.files && event.target.files[0];
                 event.target.value = '';
@@ -1716,6 +1770,10 @@ window.__ModuleLoader__.load({
                         className: 'item',
                         onClick: () => { setMenu(null); setLocalFile(menu.book); },
                     }, h('span', { className: 'ic' }, '📁'), t('menuReplace')),
+                    h('button', {
+                        className: 'item',
+                        onClick: () => { setMenu(null); rechunkBook(menu.book); },
+                    }, h('span', { className: 'ic' }, '🔄'), t('menuRechunk')),
                     h('div', { className: 'sep' }),
                     h('button', {
                         className: 'item',

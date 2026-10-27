@@ -255,7 +255,21 @@ const numberedChapter = await callApi('GET', `/books/${numberedUpload.data.book.
 assert.ok(!numberedChapter.data.text.includes('1、第1个标题'), '正文不应重复标题行');
 assert.ok(numberedChapter.data.text.includes('这是第 1 章的正文内容'), '正文应正确');
 
-// ---- 13. 落盘检查 ----
+// ---- 13. 重新分章（不用重新上传） ----
+// 分章规则改进后，已上传的书仍是旧切法。rechunk 直接拿已存正文重算。
+const beforeRechunk = await callApi('GET', `/books/${numberedUpload.data.book.id}/toc`);
+const rechunked = await callApi('POST', `/books/${numberedUpload.data.book.id}/rechunk`, {});
+assert.equal(rechunked.data.ok, true);
+assert.equal(rechunked.data.chapters, 30, '重新分章后仍应是 30 章');
+assert.ok(rechunked.data.book.chapterCount === 30, '元数据里的章数也要更新');
+// 正文没变
+const afterRechunk = await callApi('GET', `/books/${numberedUpload.data.book.id}/chapter?index=0`);
+assert.ok(afterRechunk.data.text.includes('这是第 1 章的正文内容'), '重新分章不应改动正文');
+// 进度被清掉（旧章号与新章节对不上）
+const stateAfter = await callApi('GET', '/state');
+assert.equal(stateAfter.data.state.progress[numberedUpload.data.book.id], undefined, '重新分章应清掉旧进度');
+
+// ---- 14. 落盘检查 ----
 const booksDir = path.join(tmpHome, 'stealthily-read', 'books');
 assert.ok(fs.existsSync(path.join(tmpHome, 'stealthily-read', 'state.json')));
 

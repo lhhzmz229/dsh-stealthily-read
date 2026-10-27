@@ -181,13 +181,18 @@ const body = paginateBody[0];
 // ---- 不阻塞主线程（这是「页面卡死但 DSH 没事」的根因） ----
 // 必须分批测量、每批让出主线程；整章一次性同步测量会把主线程占满。
 assert.ok(/MEASURE_BATCH/.test(source), '应有每批测量段数的常量');
-assert.ok(/for \(let start = 0; start < paragraphs\.length; start \+= MEASURE_BATCH\)/.test(body), '应分批测量段落');
+assert.ok(/MEASURE_MAX_PARAGRAPHS/.test(source), '应有「最多精确测量多少段」的保护上限');
+assert.ok(/for \(let start = 0; start < measureCount; start \+= MEASURE_BATCH\)/.test(body), '应分批测量段落');
 assert.ok(/await yieldToMain\(\)/.test(body), '每批之后应让出主线程');
 assert.ok(/function yieldToMain\(\)/.test(source), '应有让出主线程的实现');
+// 阶段 2 也要让出：跨页段落会反复改 DOM 测量
+assert.ok(/sinceYield >= 40/.test(body), '切页阶段也应周期性让出主线程');
 // 让出必须用宏任务（setTimeout），微任务插不进渲染和输入事件
 assert.ok(/setTimeout\(resolve, 0\)/.test(source), '让出主线程应用 setTimeout（微任务无效）');
 assert.ok(/async function paginateCached\(/.test(source), 'paginateCached 应改为异步');
 assert.ok(/alive = false/.test(source), '异步分页要有竞态保护（切章时丢弃旧结果）');
+// 超大章节要用平均高度兜底，不能把剩余段落当成 0 高
+assert.ok(/heights\[i\] = avg/.test(body), '超出精确测量范围的段落应用平均高度补齐');
 
 // 段间距必须读真实 computed margin，而不是 em 估算
 assert.ok(/getComputedStyle\(gapProbe\)\.marginBottom/.test(body), '段间距应读真实 computed margin');

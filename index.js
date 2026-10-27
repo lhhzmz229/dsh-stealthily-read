@@ -91,8 +91,85 @@ function decodeText(buffer) {
 }
 
 /**
+ * 阿拉伯数字编号的章节标题，例如 `1、喝酒不开车`、`12. 标题`、`1070、正文结束`。
+ *
+ * 这类 txt 很常见（不少站点导出的就是 `N、标题`），但直接放宽正则会误伤：
+ * 正文里也有「1、项目最终确定…」「2、康康兜兜里有糖…」这类列表，
+ * 书末还常有感谢名单，从 1 重新编号。
+ *
+ * 所以不靠单行判定，而是先收集候选，再取**最长连续序号链**：
+ * 真实章节一定是 1,2,3,… 连续递增；列表会断号，名单会另起一条短链。
+ */
+const NUMERIC_TITLE_RE = /^\s*(\d{1,5})\s*[、.．]\s*(\S.*)$/;
+
+/** 收集「数字 + 顿号/句点」形式的候选标题行 */
+function collectNumericCandidates(lines) {
+    const cands = [];
+    let offset = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i];
+        const trimmed = raw.trim();
+        if (trimmed !== '' && trimmed.length <= CHAPTER_TITLE_MAX) {
+            const m = NUMERIC_TITLE_RE.exec(trimmed);
+            if (m && m[2].trim() !== '') {
+                // 注意：不要用「以句号结尾就排除」来过滤。
+                // 很多章节标题本身就是一句话，比如
+                // `1068、你住长江头，我住长江尾，共饮一江水。`
+                // 那条件会把 1068 之后的章节全砍掉，只剩一条断链。
+                // 真正排除列表项靠的是后面的「最长连续序号链」。
+                cands.push({ start: offset, num: Number(m[1]), title: trimmed });
+            }
+        }
+        offset += raw.length + 1; // 保留被 split 掉的 \n
+    }
+    return cands;
+}
+
+/**
+ * 取所有「序号 +1」链，按长度降序返回。
+ *
+ * lastSeen 记录每个序号最后出现的位置：遍历时若前面出现过 num-1，
+ * 就把当前候选接到那条链上。最后回溯出全部链。
+ *
+ * 一条书里可能有不止一条链：正文 `1..1070` 是一条，书末番外又从 `1..4` 另起一条。
+ * 两条都要保留，否则番外会被并进最后一章。
+ */
+function consecutiveChains(cands) {
+    if (cands.length === 0) return [];
+    const best = new Array(cands.length).fill(1);
+    const prev = new Array(cands.length).fill(-1);
+    const lastSeen = new Map();
+    for (let i = 0; i < cands.length; i += 1) {
+        const at = lastSeen.get(cands[i].num - 1);
+        if (at !== undefined && best[at] + 1 > best[i]) {
+            best[i] = best[at] + 1;
+            prev[i] = at;
+        }
+        lastSeen.set(cands[i].num, i);
+    }
+    // 每条链的终点：它没有再被别的候选接上
+    const isTail = new Array(cands.length).fill(true);
+    for (let i = 0; i < cands.length; i += 1) {
+        if (prev[i] >= 0) isTail[prev[i]] = false;
+    }
+    const chains = [];
+    for (let i = 0; i < cands.length; i += 1) {
+        if (!isTail[i]) continue;
+        const chain = [];
+        for (let cur = i; cur >= 0; cur = prev[cur]) chain.unshift(cands[cur]);
+        if (chain.length >= 2) chains.push(chain);
+    }
+    chains.sort((a, b) => b.length - a.length);
+    return chains;
+}
+
+/**
  * 把整本正文切成章节。返回的每章只记字符区间，正文仍只在 book.txt 里存一份。
- * 找不到章节标题时按固定字数切段，标题写成「第 N 段」。
+ *
+ * 识别顺序：
+ *   1. 「第 N 章 / 序章 / Chapter N」这类明确标记（isChapterTitle）；
+ *   2. 这类标记很少时，补上「数字 + 顿号」的连续编号链（本书就是这种）。
+ * 两条都不成立时按固定字数切段，标题写成「第 N 段」。
  */
 function splitChapters(text) {
     const lines = text.split('\n');
@@ -103,6 +180,23 @@ function splitChapters(text) {
             marks.push({ start: offset, title: line.trim() });
         }
         offset += line.length + 1; // 保留被 split 掉的 \n
+    }
+
+    // 「第 N 章」很少（甚至没有）时，尝试数字编号链。
+    //
+    // 这里只取**最长的一条**，并且要求它明显长于第二名。
+    // 一本正文动辄上千章，而感谢名单 / 目录页 / 番外目录往往只有几十条，
+    // 它们也会形成自己的「1..N」链。全都要会把正文切成几千个碎片（实测 22 条链、
+    // 1439 个「章」，其中 369 个是名单条目）。
+    if (marks.length < 10) {
+        const chains = consecutiveChains(collectNumericCandidates(lines));
+        const main = chains[0];
+        if (main && main.length >= 10) {
+            marks.length = 0;
+            for (const item of main) {
+                marks.push({ start: item.start, title: item.title });
+            }
+        }
     }
 
     if (marks.length === 0) {

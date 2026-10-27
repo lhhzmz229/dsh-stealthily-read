@@ -218,7 +218,44 @@ assert.equal(replaced.data.book.chapterCount, 2, '换文件应重新分章');
 const newChapter = await callApi('GET', `/books/${metaBook}/chapter?index=0`);
 assert.ok(newChapter.data.text.includes('新正文'), '换文件后正文应更新');
 
-// ---- 12. 落盘检查 ----
+// ---- 12. 「N、标题」编号格式（很多 txt 是这种，没有「第 N 章」） ----
+// 关键点：正文里也有「1、…」开头的列表、书末还有重新编号的感谢名单，
+// 必须靠「最长连续序号链」把真章节挑出来，不能把名单当章节。
+const numbered = [];
+for (let i = 1; i <= 30; i += 1) {
+    numbered.push(`${i}、第${i}个标题`);
+    numbered.push(`　　这是第 ${i} 章的正文内容。`);
+    numbered.push('');
+}
+// 正文中间插一段以「1、」开头的列表（干扰项，序号会断）
+numbered.splice(20, 0, '1、项目最终确定在A和B之间选择；', '2、康康兜兜里有糖，经常在盟群发言；', '');
+// 书末再加一段从 1 重新编号的感谢名单（另一条短链）
+for (let i = 1; i <= 8; i += 1) {
+    numbered.push(`${i}、感谢名单第${i}位`);
+    numbered.push('');
+}
+const numberedText = numbered.join('\n');
+const numberedUpload = await callApi('POST', '/books', {
+    name: 'numbered.txt',
+    title: '编号格式',
+    dataBase64: Buffer.from(numberedText, 'utf8').toString('base64'),
+});
+assert.equal(numberedUpload.status, 200);
+assert.equal(numberedUpload.data.book.chapterCount, 30, '应只识别正文 30 章，不含列表与感谢名单');
+
+const numberedToc = await callApi('GET', `/books/${numberedUpload.data.book.id}/toc`);
+assert.equal(numberedToc.data.titles.length, 30);
+assert.equal(numberedToc.data.titles[0], '1、第1个标题');
+assert.equal(numberedToc.data.titles[29], '30、第30个标题');
+assert.ok(!numberedToc.data.titles.some((x) => x.includes('感谢名单')), '感谢名单不应被当成章节');
+assert.ok(!numberedToc.data.titles.some((x) => x.includes('项目最终确定')), '正文里的列表不应被当成章节');
+
+// 章正文不能带上标题行
+const numberedChapter = await callApi('GET', `/books/${numberedUpload.data.book.id}/chapter?index=0`);
+assert.ok(!numberedChapter.data.text.includes('1、第1个标题'), '正文不应重复标题行');
+assert.ok(numberedChapter.data.text.includes('这是第 1 章的正文内容'), '正文应正确');
+
+// ---- 13. 落盘检查 ----
 const booksDir = path.join(tmpHome, 'stealthily-read', 'books');
 assert.ok(fs.existsSync(path.join(tmpHome, 'stealthily-read', 'state.json')));
 

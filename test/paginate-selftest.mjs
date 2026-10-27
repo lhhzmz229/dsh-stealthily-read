@@ -12,7 +12,9 @@ import path from 'node:path';
 const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'client.js'), 'utf8');
 
 function extractFunction(name) {
-    const start = source.indexOf(`function ${name}(`);
+    // 支持 async 函数：先找 `async function name(`，找不到再退回 `function name(`
+    let start = source.indexOf(`async function ${name}(`);
+    if (start < 0) start = source.indexOf(`function ${name}(`);
     assert.ok(start > 0, `应能找到 ${name}`);
     let depth = 0;
     let seen = false;
@@ -110,11 +112,16 @@ const fakeWindow = {
 const factory = new Function(
     'document',
     'window',
-    [
-        extractFunction('paginate'),
-        'return paginate;',
-    ].join('\n'),
+    'MEASURE_BATCH',
+    'yieldToMain',
+    // new Function 的函数体不是 async，所以要自己包一层 async IIFE 把 paginate 暴露出来
+    `return (async () => {\n${extractFunction('paginate')}\nreturn paginate;\n})();`,
 );
+
+// 每批测量段数：取小一点，让测试能真正走多批路径（验证分批逻辑）
+const MEASURE_BATCH = 3;
+// 让出主线程：测试里用微任务即可，不真的等 setTimeout
+const yieldToMain = () => Promise.resolve();
 
 const style = {
     fontFamily: 'serif',
@@ -129,11 +136,11 @@ const strip = (text) => text.replace(/\s/g, '');
 const WIDTH = 320;
 const HEIGHT = 220;
 
-const paginate = factory(makeFakeDocument(WIDTH), fakeWindow);
+const paginate = await factory(makeFakeDocument(WIDTH), fakeWindow, MEASURE_BATCH, yieldToMain);
 
 // ---- 1. 不丢字、不重字 ----
 const paragraphs = Array.from({ length: 12 }, (_, i) => `第${i + 1}段：` + '正文内容'.repeat(18));
-const pages = paginate(paragraphs, WIDTH, HEIGHT, style);
+const pages = await paginate(paragraphs, WIDTH, HEIGHT, style);
 assert.ok(pages.length > 1, '应切成多页');
 assert.equal(strip(pages.flat().join('')), strip(paragraphs.join('')), '拼回来的正文应与原文一致');
 
@@ -187,7 +194,7 @@ const mixed = [
     '中'.repeat(600),
     '收尾段。',
 ];
-const mixedPages = paginate(mixed, WIDTH, HEIGHT, style);
+const mixedPages = await paginate(mixed, WIDTH, HEIGHT, style);
 assert.equal(strip(mixedPages.flat().join('')), strip(mixed.join('')), '混排切段后不能丢字');
 for (let i = 0; i < mixedPages.length - 1; i += 1) {
     const used = pageUsage(mixedPages[i]);
@@ -197,26 +204,56 @@ for (let i = 0; i < mixedPages.length - 1; i += 1) {
 }
 
 // ---- 5. 窗口变矮 / 字号变大 → 页数变多 ----
-const shorter = paginate(paragraphs, WIDTH, 120, style);
+const shorter = await paginate(paragraphs, WIDTH, 120, style);
 assert.ok(shorter.length > pages.length, '窗口变矮后页数应增加');
 
-const biggerFont = paginate(paragraphs, WIDTH, HEIGHT, { ...style, fontSize: '22px' });
+const biggerFont = await paginate(paragraphs, WIDTH, HEIGHT, { ...style, fontSize: '22px' });
 assert.ok(biggerFont.length >= pages.length, '字号变大后页数不应减少');
 
 // ---- 5. 极端尺寸也能推进 ----
-const tiny = paginate(['一二三四五六七八九十'.repeat(50)], 120, 30, style);
+const tiny = await paginate(['一二三四五六七八九十'.repeat(50)], 120, 30, style);
 assert.ok(tiny.length > 0, '极端尺寸也要给出至少一页');
 assert.equal(strip(tiny.flat().join('')), strip('一二三四五六七八九十'.repeat(50)));
 
 // ---- 6. 空内容 ----
-assert.deepEqual(paginate([], WIDTH, HEIGHT, style), [[]], '空内容应给一页空页');
+assert.deepEqual(await paginate([], WIDTH, HEIGHT, style), [[]], '空内容应给一页空页');
 
 // ---- 7. 高度刚好差半行时，宁可少放也不裁字 ----
 // 构造一段刚好比一页多一点点的内容，确认它被切开而不是被裁掉
 const perLine = Math.floor(WIDTH / CHAR);
 const longPara = '字'.repeat(perLine * 10 + 3);
-const edge = paginate([longPara], WIDTH, LINE * 10, style);
+const edge = await paginate([longPara], WIDTH, LINE * 10, style);
 assert.ok(edge.length >= 2, '超出部分应翻到下一页');
 assert.equal(strip(edge.flat().join('')), strip(longPara), '跨页段落不能丢字');
+
+// ---- 8. 分批测量：长章节必须真的分多批，并且每批之间让出主线程 ----
+// 这是「上传完 / 切小说后页面卡死、DSH 没事」的修复点：
+// 一次性同步测量整章会把主线程占满，界面点什么都没反应。
+{
+    let yields = 0;
+    const countingYield = () => {
+        yields += 1;
+        return Promise.resolve();
+    };
+    const longDoc = makeFakeDocument(WIDTH);
+    const longPaginate = await factory(longDoc, fakeWindow, MEASURE_BATCH, countingYield);
+
+    // 段落数远大于每批上限，必然走多批
+    const manyParagraphs = Array.from({ length: 40 }, (_, i) => `第${i + 1}段：` + '正文'.repeat(10));
+    const manyPages = await longPaginate(manyParagraphs, WIDTH, HEIGHT, style);
+
+    const expectedYields = Math.floor((manyParagraphs.length - 1) / MEASURE_BATCH);
+    assert.ok(
+        yields >= expectedYields,
+        `应分 ${Math.ceil(manyParagraphs.length / MEASURE_BATCH)} 批测量、让出 ${expectedYields} 次，实际让出 ${yields} 次`,
+    );
+    assert.equal(strip(manyPages.flat().join('')), strip(manyParagraphs.join('')), '分批测量后不能丢字');
+
+    // 每页仍不超容量
+    for (let i = 0; i < manyPages.length - 1; i += 1) {
+        const used = pageUsage(manyPages[i]);
+        assert.ok(used <= HEIGHT + 0.5, `长章节第 ${i + 1} 页超容量`);
+    }
+}
 
 console.log(`分页自检通过 ✓ ${paragraphs.length} 段 → ${pages.length} 页（矮窗口 ${shorter.length} 页）`);

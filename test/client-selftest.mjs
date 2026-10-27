@@ -174,11 +174,21 @@ assert.ok(/saved\.page/.test(source) && /saved\.pages/.test(source), '重新分�
 // 分页必须用「实测高度 + 实测段间距」，不能混用流坐标与相对高度：
 // 混用会让切段之后的段落被算成巨大高度、误判放不下而提前换页——
 // 表现就是「有些页正常、有些页空很多」。
-const paginateBody = /function paginate\([\s\S]*?\n {8}\}/.exec(source);
+const paginateBody = /async function paginate\([\s\S]*?\n {8}\}/.exec(source);
 assert.ok(paginateBody, '应能取到 paginate 函数体');
 const body = paginateBody[0];
-// 段落高度一次性批量测量
-assert.ok(/const heights = nodes\.map/.test(body), '段落高度应一次性批量测量');
+
+// ---- 不阻塞主线程（这是「页面卡死但 DSH 没事」的根因） ----
+// 必须分批测量、每批让出主线程；整章一次性同步测量会把主线程占满。
+assert.ok(/MEASURE_BATCH/.test(source), '应有每批测量段数的常量');
+assert.ok(/for \(let start = 0; start < paragraphs\.length; start \+= MEASURE_BATCH\)/.test(body), '应分批测量段落');
+assert.ok(/await yieldToMain\(\)/.test(body), '每批之后应让出主线程');
+assert.ok(/function yieldToMain\(\)/.test(source), '应有让出主线程的实现');
+// 让出必须用宏任务（setTimeout），微任务插不进渲染和输入事件
+assert.ok(/setTimeout\(resolve, 0\)/.test(source), '让出主线程应用 setTimeout（微任务无效）');
+assert.ok(/async function paginateCached\(/.test(source), 'paginateCached 应改为异步');
+assert.ok(/alive = false/.test(source), '异步分页要有竞态保护（切章时丢弃旧结果）');
+
 // 段间距必须读真实 computed margin，而不是 em 估算
 assert.ok(/getComputedStyle\(gapProbe\)\.marginBottom/.test(body), '段间距应读真实 computed margin');
 assert.ok(!/gapPx = 0\.55/.test(body), '不应再按 0.55em 公式估算段间距');
@@ -193,6 +203,8 @@ assert.ok(/rect\.height \+ \(parseFloat\(cs\.marginBottom\) \|\| 0\)/.test(body)
 assert.ok(/mount && mount\.nodeType === 1/.test(body), '测量容器应挂进真实正文节点');
 assert.ok(/anchor\.appendChild\(host\)/.test(body), '测量容器应挂在 anchor 下');
 assert.ok(/guard < 10/.test(body), '切段二分要有次数上限');
+// 测量容器必须用 finally 清理，异步中断时也不能留在 DOM 里
+assert.ok(/finally \{[\s\S]*?host\.parentNode\.removeChild\(host\)/.test(body), '测量容器应在 finally 中清理');
 // 整段比一页还高时不能整段塞进去（那会被 overflow 裁掉）
 assert.ok(/窗口矮到一行都装不下/.test(body), '应保留「窗口极矮」的兜底分支');
 // 分页结果要缓存

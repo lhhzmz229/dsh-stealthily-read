@@ -747,6 +747,23 @@ window.__ModuleLoader__.load({
         const PAGE_CACHE = new Map();
         const PAGE_CACHE_MAX = 12;
 
+        /**
+         * 每批测量的段落数。
+         * 太小 → 让出主线程太频繁，分页变慢；太大 → 单批布局又变重。
+         * 120 段一批，一批的布局通常只有几毫秒，用户在滚动/点击之间感觉不到。
+         */
+        const MEASURE_BATCH = 120;
+
+        /**
+         * 让出主线程一次。
+         *
+         * 用 `setTimeout(0)` 而不是 `await Promise.resolve()`：后者只是微任务，
+         * 事件循环里的渲染和输入事件仍然插不进来，等于没让。
+         */
+        function yieldToMain() {
+            return new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
         function cacheKey(chapterKey, width, height, style) {
             return `${chapterKey}|${Math.round(width)}x${Math.round(height)}|${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.letterSpacing}|${style.lineHeight}|${style.indent}|${style.heading ? 'h' : '-'}`;
         }
@@ -764,7 +781,22 @@ window.__ModuleLoader__.load({
          * 段间距、折行、章标题全都自动正确。切页只需要按「下一段起点 - 本页起点」
          * 和可用高度比较，完全是算术。
          */
-        function paginate(paragraphs, width, height, style, mount) {
+        /**
+         * 按**实测高度**把段落切成页（分批异步，不阻塞主线程）。
+         *
+         * 之前这里是页面卡死的根因：把整章所有段落一次性插进 DOM，再逐段量高度。
+         * 一章几千段时，单次布局就要几秒，而且是**同步**的——DSH 进程没事，
+         * 但浏览器主线程被占满，点什么都没反应。上传完和切换小说都会走到这里。
+         *
+         * 现在分两阶段：
+         *   1. 测量：每批最多 BATCH 段，插进离屏容器 → 一次批量读高度 → 移除，
+         *      然后 await 让出主线程（yieldToMain）再继续下一批；
+         *   2. 切页：纯算术，没有 DOM 操作，瞬间完成。
+         * 这样无论一章多少段，主线程每批之间都能喘一口气，界面保持可响应。
+         *
+         * @returns {Promise<string[][]>} 页数组
+         */
+        async function paginate(paragraphs, width, height, style, mount) {
             if (typeof document === 'undefined') return [paragraphs];
             if (width < 40 || height < 30) return [paragraphs];
 
@@ -785,7 +817,6 @@ window.__ModuleLoader__.load({
             host.style.overflowWrap = 'anywhere';
             anchor.appendChild(host);
 
-            // 段间距：读真实 computed margin，而不是按 0.55em 估算
             const makeProbe = (text, tag = 'p') => {
                 const node = document.createElement(tag);
                 if (tag === 'p') {
@@ -798,140 +829,148 @@ window.__ModuleLoader__.load({
                 return node;
             };
 
-            // 段间距：读**真实** computed margin-bottom，不用 em 公式估算。
-            // 之前混用「流坐标差」和「相对坐标」，切段后两套坐标一混，
-            // 后面的段落就被算成一个巨大的高度、误判放不下而提前换页——
-            // 表现就是「含切段的页面大片留白，别的页面正常」。
-            // 现在统一成「自身高度 + 实测间距」，不再有任何坐标运算。
-            const gapProbe = makeProbe('测');
-            let gapPx = 0;
             try {
-                gapPx = parseFloat(window.getComputedStyle(gapProbe).marginBottom) || 0;
-            } catch {
-                gapPx = 0;
-            }
-            host.removeChild(gapProbe);
-
-            // 章标题：高度要含 margin-bottom（getBoundingClientRect 不含 margin，
-            // 只取 height 会少算一个间距，第一页最后一行就被切掉半行）
-            let headingPx = 0;
-            if (style.heading) {
-                const h3 = makeProbe('测', 'h3');
+                // ---- 段间距：读真实 computed margin-bottom ----
+                const gapProbe = makeProbe('测');
+                let gapPx = 0;
                 try {
-                    const rect = h3.getBoundingClientRect();
-                    const cs = window.getComputedStyle(h3);
-                    headingPx = rect.height + (parseFloat(cs.marginBottom) || 0);
+                    gapPx = parseFloat(window.getComputedStyle(gapProbe).marginBottom) || 0;
                 } catch {
-                    headingPx = 0;
+                    gapPx = 0;
                 }
-                host.removeChild(h3);
-            }
+                host.removeChild(gapProbe);
 
-            // 一次性排好整章：只触发一次布局，读每段的真实高度（不含 margin）
-            const nodes = paragraphs.map((text) => makeProbe(text));
-            const heights = nodes.map((node) => {
-                try {
-                    return node.getBoundingClientRect().height;
-                } catch {
-                    return 0;
-                }
-            });
-            for (const node of nodes) host.removeChild(node);
-
-            // 跨页切段时才需要的探针
-            const probe = makeProbe('');
-            const measure = (text) => {
-                probe.textContent = text;
-                try {
-                    return probe.getBoundingClientRect().height;
-                } catch {
-                    return 0;
-                }
-            };
-
-            /** 在 room 像素内最多能放下多少个字符（实测二分，最多 10 次） */
-            const fitChars = (text, room) => {
-                if (room <= 0) return 0;
-                let lo = 0;
-                let hi = text.length;
-                let best = 0;
-                let guard = 0;
-                while (lo <= hi && guard < 10) {
-                    guard += 1;
-                    const mid = (lo + hi) >> 1;
-                    if (measure(text.slice(0, mid)) <= room + 0.5) {
-                        best = mid;
-                        lo = mid + 1;
-                    } else {
-                        hi = mid - 1;
+                // ---- 章标题：实测高度 + 它的下边距 ----
+                let headingPx = 0;
+                if (style.heading) {
+                    const h3 = makeProbe('测', 'h3');
+                    try {
+                        const rect = h3.getBoundingClientRect();
+                        const cs = window.getComputedStyle(h3);
+                        headingPx = rect.height + (parseFloat(cs.marginBottom) || 0);
+                    } catch {
+                        headingPx = 0;
                     }
+                    host.removeChild(h3);
                 }
-                return best;
-            };
 
-            const pages = [];
-            let current = [];
-            // 当前页已用像素；第一页先扣掉章标题（含它的下边距）
-            let used = headingPx;
+                // ---- 阶段 1：分批测量每段真实高度 ----
+                const heights = new Array(paragraphs.length).fill(0);
+                for (let start = 0; start < paragraphs.length; start += MEASURE_BATCH) {
+                    const end = Math.min(paragraphs.length, start + MEASURE_BATCH);
+                    const batch = [];
+                    for (let i = start; i < end; i += 1) batch.push(makeProbe(paragraphs[i]));
+                    // 先让浏览器把这一批排好版，再一次读全部高度（一次布局）
+                    void host.offsetHeight;
+                    for (let i = start; i < end; i += 1) {
+                        try {
+                            heights[i] = batch[i - start].getBoundingClientRect().height;
+                        } catch {
+                            heights[i] = 0;
+                        }
+                    }
+                    for (const node of batch) host.removeChild(node);
+                    // 让出主线程：下一批不会和这一批挤在同一帧
+                    if (end < paragraphs.length) await yieldToMain();
+                }
 
-            for (let index = 0; index < paragraphs.length; index += 1) {
-                let text = paragraphs[index];
-                let ownHeight = heights[index];
-                if (text === '') continue;
+                // ---- 阶段 2：纯算术切页（无 DOM） ----
+                // 跨页切段时才需要的探针
+                const probe = makeProbe('');
+                const measure = (text) => {
+                    probe.textContent = text;
+                    try {
+                        return probe.getBoundingClientRect().height;
+                    } catch {
+                        return 0;
+                    }
+                };
 
-                // 一段可能跨多页，循环到它被放完为止
-                while (text.length > 0) {
-                    // 段与段之间要加间距；页内第一段不加（否则页首多一条空白）
-                    const gap = current.length > 0 ? gapPx : 0;
-                    const needed = gap + ownHeight;
+                /** 在 room 像素内最多能放下多少个字符（实测二分，最多 10 次） */
+                const fitChars = (text, room) => {
+                    if (room <= 0) return 0;
+                    let lo = 0;
+                    let hi = text.length;
+                    let best = 0;
+                    let guard = 0;
+                    while (lo <= hi && guard < 10) {
+                        guard += 1;
+                        const mid = (lo + hi) >> 1;
+                        if (measure(text.slice(0, mid)) <= room + 0.5) {
+                            best = mid;
+                            lo = mid + 1;
+                        } else {
+                            hi = mid - 1;
+                        }
+                    }
+                    return best;
+                };
 
-                    if (used + needed <= height + 0.5) {
-                        current.push(text);
-                        used += needed;
+                const pages = [];
+                let current = [];
+                // 当前页已用像素；第一页先扣掉章标题（含它的下边距）
+                let used = headingPx;
+
+                for (let index = 0; index < paragraphs.length; index += 1) {
+                    let text = paragraphs[index];
+                    let ownHeight = heights[index];
+                    if (text === '') continue;
+
+                    // 一段可能跨多页，循环到它被放完为止
+                    while (text.length > 0) {
+                        // 段与段之间要加间距；页内第一段不加（否则页首多一条空白）
+                        const gap = current.length > 0 ? gapPx : 0;
+                        const needed = gap + ownHeight;
+
+                        if (used + needed <= height + 0.5) {
+                            current.push(text);
+                            used += needed;
+                            text = '';
+                            break;
+                        }
+
+                        // 放不下：这一页还剩多少像素可以给这段用（已扣掉间距）
+                        const room = height - used - gap;
+                        const fit = room > 0 ? fitChars(text, room) : 0;
+                        if (fit > 0) {
+                            // 切一段填满本页，剩余部分排到下一页
+                            current.push(text.slice(0, fit));
+                            pages.push(current);
+                            current = [];
+                            used = 0;
+                            text = text.slice(fit).replace(/^[\s\u3000]+/, '');
+                            ownHeight = measure(text);
+                            continue;
+                        }
+
+                        if (current.length > 0) {
+                            // 一个字都放不下：本页收尾，换页重新处理这一段
+                            pages.push(current);
+                            current = [];
+                            used = 0;
+                            continue;
+                        }
+
+                        // 当前页是空的、连一个字都放不下：窗口矮到一行都装不下，
+                        // 整段单独成页保证有进展（唯一允许溢出的情况）
+                        pages.push([text]);
                         text = '';
-                        break;
-                    }
-
-                    // 放不下：这一页还剩多少像素可以给这段用（已扣掉间距）
-                    const room = height - used - gap;
-                    const fit = room > 0 ? fitChars(text, room) : 0;
-                    if (fit > 0) {
-                        // 切一段填满本页，剩余部分排到下一页
-                        current.push(text.slice(0, fit));
-                        pages.push(current);
-                        current = [];
                         used = 0;
-                        text = text.slice(fit).replace(/^[\s\u3000]+/, '');
-                        ownHeight = measure(text);
-                        continue;
                     }
-
-                    if (current.length > 0) {
-                        // 一个字都放不下：本页收尾，换页重新处理这一段
-                        pages.push(current);
-                        current = [];
-                        used = 0;
-                        continue;
-                    }
-
-                    // 当前页是空的、连一个字都放不下：窗口矮到一行都装不下，
-                    // 整段单独成页保证有进展（唯一允许溢出的情况）
-                    pages.push([text]);
-                    text = '';
-                    used = 0;
                 }
+
+                host.removeChild(probe);
+                if (current.length > 0) pages.push(current);
+                if (pages.length === 0) pages.push([]);
+                return pages;
+            } finally {
+                // 无论成功失败都要清理测量容器，避免它留在 DOM 里影响后续布局
+                if (host.parentNode) host.parentNode.removeChild(host);
             }
-
-            host.removeChild(probe);
-            if (host.parentNode) host.parentNode.removeChild(host);
-
-            if (current.length > 0) pages.push(current);
-            if (pages.length === 0) pages.push([]);
-            return pages;
         }
 
-        /** 带缓存的入口：同一组参数不重复计算 */
-        function paginateCached(chapterKey, paragraphs, width, height, style, mount) {
+        /** 带缓存的入口：同一组参数不重复计算（异步，因为测量要分批让出主线程） */
+        async function paginateCached(chapterKey, paragraphs, width, height, style, mount) {
             const key = cacheKey(chapterKey, width, height, style);
             const hit = PAGE_CACHE.get(key);
             if (hit) {
@@ -940,7 +979,7 @@ window.__ModuleLoader__.load({
                 PAGE_CACHE.set(key, hit);
                 return hit;
             }
-            const pages = paginate(paragraphs, width, height, style, mount);
+            const pages = await paginate(paragraphs, width, height, style, mount);
             PAGE_CACHE.set(key, pages);
             if (PAGE_CACHE.size > PAGE_CACHE_MAX) {
                 const oldest = PAGE_CACHE.keys().next().value;
@@ -1952,31 +1991,45 @@ window.__ModuleLoader__.load({
             const style = textStyle(prefs);
             const styleKey = [style.fontFamily, style.fontSize, style.fontWeight, style.letterSpacing, style.lineHeight, style.indent].join('|');
 
-            // 分页：章、尺寸或文字样式一变就重排（带缓存，同参数只算一次）
+            // 分页：章、尺寸或文字样式一变就重排（带缓存，同参数只算一次）。
+            //
+            // 分页现在是异步的（分批测量、每批让出主线程），所以必须防竞态：
+            // 快速切章 / 拉窗口时，晚开始的一次可能先完成，覆盖掉正确结果。
+            // 用 alive 标记：effect 清理后就不再写 state。
             React.useEffect(() => {
                 if (!chapter || box.w <= 0 || box.h <= 0) {
                     setPages([]);
-                    return;
+                    return undefined;
                 }
+                let alive = true;
                 const paragraphs = chapter.text.split(/\n+/).map((line) => line.trim()).filter((line) => line !== '');
                 // 把真实的 .page 节点传进去：测量容器挂在它下面，
                 // 才能继承到和渲染完全一致的 CSS 变量 / 字号 / 行高。
-                const next = paginateCached(chapterKey, paragraphs, box.w, box.h, style, pageRef.current);
-                setPages(next);
+                paginateCached(chapterKey, paragraphs, box.w, box.h, style, pageRef.current)
+                    .then((next) => {
+                        if (!alive) return;
+                        setPages(next);
 
-                // 落到哪一页：同一章就按保存的页码，否则按比例折算
-                const saved = state.progress[chapter.bookId] || {};
-                let target = 0;
-                if (Number(saved.index) === chapter.index) {
-                    if (Number(saved.pages) === next.length && Number.isFinite(Number(saved.page))) {
-                        target = Number(saved.page);
-                    } else if (Number.isFinite(Number(saved.ratio))) {
-                        target = Math.round(Number(saved.ratio) * Math.max(0, next.length - 1));
-                    }
-                }
-                target = clamp(target, 0, Math.max(0, next.length - 1));
-                setPageIndex(target);
-                restoreRef.current = { chapterKey, pages: next.length, page: target };
+                        // 落到哪一页：同一章就按保存的页码，否则按比例折算
+                        const saved = state.progress[chapter.bookId] || {};
+                        let target = 0;
+                        if (Number(saved.index) === chapter.index) {
+                            if (Number(saved.pages) === next.length && Number.isFinite(Number(saved.page))) {
+                                target = Number(saved.page);
+                            } else if (Number.isFinite(Number(saved.ratio))) {
+                                target = Math.round(Number(saved.ratio) * Math.max(0, next.length - 1));
+                            }
+                        }
+                        target = clamp(target, 0, Math.max(0, next.length - 1));
+                        setPageIndex(target);
+                        restoreRef.current = { chapterKey, pages: next.length, page: target };
+                    })
+                    .catch(() => {
+                        if (alive) setPages([]);
+                    });
+                return () => {
+                    alive = false;
+                };
             }, [chapterKey, box.w, box.h, styleKey]);
 
             // 页数或页码确定后落一次进度（保证「下次接着读」拿到的是页号）

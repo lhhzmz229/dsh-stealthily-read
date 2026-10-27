@@ -257,4 +257,21 @@ assert.ok(/let used = headingPx;/.test(source), '第一页应从章标题高度�
 assert.ok(/makeProbe\('测', 'h3'\)/.test(source), '应造 h3 探针量标题高度');
 assert.ok(/style\.heading \? 'h' : '-'/.test(source), '分页缓存 key 要区分有无章标题');
 
+// ---- 工具栏隐藏后仍要能翻章 ----
+// chrome: 'never' 会把 bar/foot 一起 display:none，按钮全没了。
+// 所以必须有不依赖工具栏的翻章入口，否则用户只能卡在某一章。
+assert.ok(/chrome-never \.bar, \.sr-win\.chrome-never \.foot \{ display: none; \}/.test(source), '隐藏工具栏应真的隐藏');
+// 1) 滚轮跨章：turn 到本章尽头会自动进下一章
+assert.ok(/next >= pages\.length[\s\S]{0,120}goToChapter\(chapter\.index \+ 1, 'first'\)/.test(source), '滚到本章尽头应自动进下一章');
+assert.ok(/next < 0[\s\S]{0,120}goToChapter\(chapter\.index - 1, 'last'\)/.test(source), '回退到本章开头应进上一章末页');
+// 2) Alt / Shift + 滚轮直接跳章
+assert.ok(/event\.altKey \|\| event\.shiftKey/.test(source), 'Alt/Shift + 滚轮应直接翻章');
+// 3) 右键菜单：上一章 / 下一章 / 目录 / 隐藏
+assert.ok(/onContextMenu/.test(source), '阅读窗应支持右键菜单');
+assert.ok(/menuPrevChapter/.test(source) && /menuNextChapter/.test(source), '右键菜单应有上一章/下一章');
+assert.ok(/menuToc/.test(source) && /menuHideWindow/.test(source), '右键菜单应有目录与隐藏');
+assert.ok(/sr-rmenu/.test(source), '右键菜单应有独立样式');
+// 4) 全局 PgUp/PgDn 兜底
+assert.ok(/goChapterBy\(1\)/.test(source) && /goChapterBy\(-1\)/.test(source), '全局 PgUp/PgDn 应能翻章');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

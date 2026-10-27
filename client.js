@@ -125,7 +125,7 @@ window.__ModuleLoader__.load({
             resetAppearance: '恢复默认外观',
             sizeW: '宽度',
             sizeH: '高度',
-            readingHint: '点击右半边 / 滚轮向下翻页，左半边 / 滚轮向上回退；← → 翻章，Esc 隐藏。',
+            readingHint: '点击右半边 / 滚轮向下翻页，左半边 / 滚轮向上回退；← → 翻页，PgUp/PgDn 或 Alt+滚轮 翻章，右键出菜单，Esc 隐藏。',
             settingsHint: '阅读窗只在设置里开启，界面上没有任何「阅读」按钮。',
             turnMode: '翻页方式',
             turnModeHint: '默认「点击 + 滚轮」。选「仅滚轮」可以避免误点。',
@@ -140,6 +140,10 @@ window.__ModuleLoader__.load({
             menuCategory: '设置分类',
             menuCover: '设置封面',
             menuDelete: '删除书籍',
+            menuPrevChapter: '上一章',
+            menuNextChapter: '下一章',
+            menuToc: '目录',
+            menuHideWindow: '隐藏窗口',
             categoryPrompt: '输入分类名（留空 = 不分类）',
             categorySaved: '分类已保存',
             coverSaved: '封面已更新',
@@ -237,7 +241,7 @@ window.__ModuleLoader__.load({
             resetAppearance: 'Reset appearance',
             sizeW: 'Width',
             sizeH: 'Height',
-            readingHint: 'Click the right half or scroll down for the next page; left half or scroll up goes back. ← → change chapters, Esc hides.',
+            readingHint: 'Click the right half or scroll down for the next page; left half or scroll up goes back. ← → turn pages, PgUp/PgDn or Alt+wheel change chapters, right-click for the menu, Esc hides.',
             settingsHint: 'The reader opens only from Settings; no “Reading” button exists anywhere in the UI.',
             turnMode: 'Page turning',
             turnModeHint: '“Click + wheel” by default; “Wheel only” avoids stray clicks.',
@@ -252,6 +256,10 @@ window.__ModuleLoader__.load({
             menuCategory: 'Set category',
             menuCover: 'Set cover',
             menuDelete: 'Delete book',
+            menuPrevChapter: 'Previous chapter',
+            menuNextChapter: 'Next chapter',
+            menuToc: 'Contents',
+            menuHideWindow: 'Hide window',
             categoryPrompt: 'Category name (blank = none)',
             categorySaved: 'Category saved',
             coverSaved: 'Cover updated',
@@ -409,6 +417,18 @@ window.__ModuleLoader__.load({
 .sr-panel .row.on { background: var(--sr-film-strong); font-weight: 600; }
 .sr-panel .row .sn { font-size: 11px; opacity: .5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sr-panel .hint { padding: 12px 10px; font-size: 12px; opacity: .55; }
+
+/* ---- 阅读窗右键菜单（工具栏隐藏时的翻章入口） ---- */
+.sr-rmenu { position: fixed; z-index: 60; min-width: 150px; padding: 5px;
+  border-radius: 9px; background: var(--dsw-alias-bg-overlay, #1c1c1e);
+  color: var(--dsw-alias-label-primary, #f2f2f7);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .34), 0 0 0 1px rgba(128, 128, 128, .22);
+  display: flex; flex-direction: column; font-size: 12.5px; }
+.sr-rmenu .item { display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: inherit; font: inherit; padding: 6px 9px; border-radius: 6px; cursor: pointer; }
+.sr-rmenu .item:hover:not(:disabled) { background: rgba(128, 128, 128, .26); }
+.sr-rmenu .item:disabled { opacity: .35; cursor: default; }
+.sr-rmenu .sep { height: 1px; margin: 4px 6px; background: rgba(128, 128, 128, .26); }
 
 /* ---- 设置行 ---- */
 .sr-row { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; }
@@ -1050,6 +1070,8 @@ window.__ModuleLoader__.load({
             hidden: false,
             chapter: null,
             toc: false,
+            /** 阅读窗右键菜单（工具栏隐藏时的翻章入口） */
+            menu: null,
             busy: false,
             error: '',
             notice: '',
@@ -2079,7 +2101,11 @@ window.__ModuleLoader__.load({
                 return () => clearInterval(timer);
             }, [open, prefs.autoTurn, chapterKey, pages.length, turn]);
 
-            // 滚轮翻页：原生监听才能 preventDefault
+            // 滚轮翻页 / 翻章：原生监听才能 preventDefault
+            //
+            // 工具栏选「隐藏」后按钮全没了，之前只剩全局 PageUp/PageDown 可用（没人知道）。
+            // 现在滚轮本身就能翻章：滚到本章尽头继续滚会进下一章（见 turn），
+            // Alt / Shift + 滚轮则直接跳章，不逐页走。都不需要工具栏可见。
             React.useEffect(() => {
                 if (!open) return undefined;
                 const node = pageRef.current;
@@ -2087,10 +2113,22 @@ window.__ModuleLoader__.load({
                 let acc = 0;
                 let locked = 0;
                 const onWheel = (event) => {
-                    if (state.toc) return;
+                    if (state.toc || state.menu) return;
                     event.preventDefault();
                     const now = Date.now();
                     if (now < locked) return;
+
+                    // Alt / Shift + 滚轮 = 直接翻章
+                    if (event.altKey || event.shiftKey) {
+                        acc = 0;
+                        locked = now + 240;
+                        const chapterDelta = event.deltaY > 0 ? 1 : -1;
+                        if (chapter) {
+                            goToChapter(chapter.index + chapterDelta, chapterDelta > 0 ? 'first' : 'last');
+                        }
+                        return;
+                    }
+
                     acc += event.deltaY;
                     if (Math.abs(acc) < 30) return;
                     const dir = acc > 0 ? 1 : -1;
@@ -2104,6 +2142,21 @@ window.__ModuleLoader__.load({
 
             const leaveTimer = React.useRef(0);
             React.useEffect(() => () => clearTimeout(leaveTimer.current), []);
+
+            // 点别处 / 按 Esc 关掉右键菜单
+            React.useEffect(() => {
+                if (!state.menu) return undefined;
+                const close = () => setState({ menu: null });
+                const onKey = (event) => {
+                    if (event.key === 'Escape') close();
+                };
+                window.addEventListener('pointerdown', close);
+                window.addEventListener('keydown', onKey);
+                return () => {
+                    window.removeEventListener('pointerdown', close);
+                    window.removeEventListener('keydown', onKey);
+                };
+            }, [state.menu]);
 
             // 所有 hook 必须在提前 return 之前调用完，否则 React 会因为
             // 「条件式 hook」整棵组件树崩掉（上次就是这么把 slot entry 弄挂的）。
@@ -2269,6 +2322,20 @@ window.__ModuleLoader__.load({
                 onPointerLeave,
                 // 整个框都能拖：跟 uTools 摸鱼阅读一样，不用先找到标题栏
                 onPointerDown: beginDrag,
+                // 右键菜单：工具栏隐藏时也能翻章 / 开目录 / 关窗口
+                onContextMenu: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (state.toc) return;
+                    setState({
+                        menu: {
+                            x: Math.min(event.clientX, (window.innerWidth || 1280) - 176),
+                            y: Math.min(event.clientY, (window.innerHeight || 800) - 168),
+                            canPrev: Boolean(chapter && chapter.index > 0),
+                            canNext: Boolean(chapter && chapter.index < chapter.total - 1),
+                        },
+                    });
+                },
                 style: {
                     left: `${prefs.x}px`,
                     top: `${prefs.y}px`,
@@ -2336,7 +2403,45 @@ window.__ModuleLoader__.load({
                     h('button', { title: t('next'), onClick: () => turn(1) }, '›'),
                     chapter ? h('span', { className: 'pos' },
                         `${t('chapter', { index: chapter.index + 1, total: chapter.total })}${
-                            totalPages > 0 ? ` · ${t('page', { index: pageIndex + 1, total: totalPages })}` : ''}`) : null));
+                            totalPages > 0 ? ` · ${t('page', { index: pageIndex + 1, total: totalPages })}` : ''}`) : null),
+
+                // 右键菜单：工具栏隐藏后，这是最直接的翻章入口
+                s.menu
+                    ? h('div', {
+                        className: 'sr-rmenu',
+                        style: { left: `${s.menu.x}px`, top: `${s.menu.y}px` },
+                        onPointerDown: (event) => event.stopPropagation(),
+                        onContextMenu: (event) => event.preventDefault(),
+                    },
+                        h('button', {
+                            className: 'item',
+                            disabled: !s.menu.canPrev,
+                            onClick: () => {
+                                setState({ menu: null });
+                                if (chapter && s.menu.canPrev) goToChapter(chapter.index - 1, 'last');
+                            },
+                        }, t('menuPrevChapter')),
+                        h('button', {
+                            className: 'item',
+                            disabled: !s.menu.canNext,
+                            onClick: () => {
+                                setState({ menu: null });
+                                if (chapter && s.menu.canNext) goToChapter(chapter.index + 1, 'first');
+                            },
+                        }, t('menuNextChapter')),
+                        h('div', { className: 'sep' }),
+                        h('button', {
+                            className: 'item',
+                            onClick: () => setState({ menu: null, toc: true }),
+                        }, t('menuToc')),
+                        h('button', {
+                            className: 'item',
+                            onClick: () => {
+                                setState({ menu: null });
+                                hideReader();
+                            },
+                        }, t('menuHideWindow')))
+                    : null);
         }
 
         function surfaceStyle(prefs) {

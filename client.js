@@ -660,7 +660,9 @@ window.__ModuleLoader__.load({
                     const value = Number(raw[key]);
                     if (Number.isFinite(value)) prefs[key] = value;
                 }
-                if (typeof raw.open === 'boolean') prefs.open = raw.open;
+                // 注意：**不**从存档里恢复 open / hidden。
+                // 这两个是运行时状态，启动时一律从关闭开始（见 RUNTIME_ONLY_KEYS）。
+                // 旧存档里可能残留 "open": true，这里直接忽略即可。
                 if (normalizeHex(raw.bgColor)) prefs.bgColor = normalizeHex(raw.bgColor);
                 if (normalizeHex(raw.textColor)) prefs.textColor = normalizeHex(raw.textColor);
                 if (typeof raw.fontFamily === 'string') prefs.fontFamily = raw.fontFamily.slice(0, 120);
@@ -692,10 +694,20 @@ window.__ModuleLoader__.load({
             return prefs;
         }
 
+        /**
+         * 落盘时只保留**偏好**，不保留**运行时状态**。
+         *
+         * `open`（窗口此刻是否开着）和 `hidden`（老板键临时藏起来）都是运行时状态：
+         * 它们一旦被写进 state.json，下次启动就会自动打开阅读窗——而「启动时默认关闭」
+         * 才是这里想要的。之前把 open 也存了，所以关掉再开 DSH 会自己弹出来。
+         * 位置 / 大小 / 字号 / 颜色 / 老板键这些才是真正的偏好，要保留。
+         */
+        const RUNTIME_ONLY_KEYS = new Set(['open', 'hidden']);
+
         function persisted(prefs) {
             const out = {};
             for (const [key, value] of Object.entries(prefs)) {
-                if (key === 'hidden') continue;
+                if (RUNTIME_ONLY_KEYS.has(key)) continue;
                 out[key] = value;
             }
             return out;
@@ -1175,10 +1187,9 @@ window.__ModuleLoader__.load({
                         prefs,
                         error: '',
                     });
-                    if (activeBookId && prefs.open) {
-                        const savedIndex = Number((state.progress[activeBookId] || {}).index) || 0;
-                        loadChapter(activeBookId, savedIndex);
-                    }
+                    // 启动时不预载任何章节：阅读窗默认关闭，用户点「显示」或按老板键时
+                    // 才由 openReader() 去载入（那里会按保存的章号续读）。
+                    // 之前这里会因为存档里的 open:true 直接 loadChapter，等于开机就打开。
                 } catch (error) {
                     setState({ ready: true, error: String(error?.message || error) });
                 } finally {

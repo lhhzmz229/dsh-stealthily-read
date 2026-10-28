@@ -279,4 +279,15 @@ assert.ok(/sr-rmenu/.test(source), '右键菜单应有独立样式');
 // 4) 全局 PgUp/PgDn 兜底
 assert.ok(/goChapterBy\(1\)/.test(source) && /goChapterBy\(-1\)/.test(source), '全局 PgUp/PgDn 应能翻章');
 
+// ---- 启动时阅读窗必须是关闭的 ----
+// open / hidden 是运行时状态，不能写进 state.json，否则下次启动会自动弹出来。
+assert.ok(/RUNTIME_ONLY_KEYS = new Set\(\['open', 'hidden'\]\)/.test(source), 'open/hidden 应列为运行时状态');
+assert.ok(/if \(RUNTIME_ONLY_KEYS\.has\(key\)\) continue;/.test(source), 'persisted 应跳过运行时状态');
+// 读取旧存档时也不能恢复 open
+assert.ok(!/prefs\.open = raw\.open/.test(source), '不应从存档恢复 open');
+// 启动时不应自动预载章节
+assert.ok(!/if \(activeBookId && prefs\.open\)/.test(source), '启动时不应因存档里的 open 自动载入章节');
+// 默认值必须是关闭
+assert.ok(/^\s*open: false,$/m.test(source), '默认 open 应为 false');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

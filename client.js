@@ -277,11 +277,21 @@ window.__ModuleLoader__.load({
         let tr = null;
         let localeService = null;
 
+        /**
+         * 文案读取。
+         *
+         * 正常情况下走宿主的 locale 服务（切语言能跟着变）。
+         * 但 locale 是**可选**服务：启动瞬间它可能还没就绪，那时 tr 还是 null。
+         * 这种情况下不能把 `nav` / `title` 这种 key 直接显示出来，
+         * 所以先退回本插件自带的中文字典，实在没有才显示 key。
+         */
         function t(key, vars) {
             let text = key;
             if (tr) {
                 const value = tr(key);
                 if (typeof value === 'string' && value !== '') text = value;
+            } else if (typeof zh[key] === 'string') {
+                text = zh[key];
             }
             if (vars) {
                 for (const [name, value] of Object.entries(vars)) {
@@ -2539,11 +2549,28 @@ window.__ModuleLoader__.load({
             const slots = typeof ctx.get === 'function' ? ctx.get('slots') : undefined;
             if (!slots || typeof slots.register !== 'function') return;
 
-            const locale = typeof ctx.get === 'function' ? ctx.get('locale') : undefined;
-            if (locale && typeof locale.register === 'function') {
+            // locale 是可选服务：拿不到就先用内置中文字典，不阻塞注册。
+            // 如果它比 apply 更晚就绪，这里监听一次并补上字典注册。
+            const attachLocale = () => {
+                const locale = typeof ctx.get === 'function' ? ctx.get('locale') : undefined;
+                if (!locale || typeof locale.register !== 'function') {
+                    // 拿不到就明确清空 tr：否则会沿用上一次 apply 留下的绑定，
+                    // 看起来像「有 locale」，实际已经失效。
+                    tr = null;
+                    localeService = null;
+                    return false;
+                }
                 localeService = locale;
                 ctx.effect(() => locale.register(NS, { zh, en }), 'stealthily-read: dictionaries');
                 if (typeof locale.bind === 'function') tr = locale.bind(NS);
+                return true;
+            };
+            if (!attachLocale()) {
+                // 稍后重试一次：等一帧让其它插件先完成激活
+                ctx.effect(() => {
+                    const timer = setTimeout(() => attachLocale(), 0);
+                    return () => clearTimeout(timer);
+                }, 'stealthily-read: late locale');
             }
 
             const wait = (name, register) => {
@@ -2597,7 +2624,14 @@ window.__ModuleLoader__.load({
             if (target !== chapter.index) loadChapter(chapter.bookId, target);
         }
 
-        exports.inject = ['slots', 'locale'];
+        // 只把 slots 当硬依赖：没有它插件什么也做不了。
+        //
+        // locale 不能写进 inject —— 写成硬依赖后，启动瞬间如果 locale 服务还没就绪，
+        // 整个插件就不会激活，apply 根本不执行，设置页和阅读窗都不会注册；
+        // 而重新启用插件时服务已经在了，于是又能正常出现。
+        // 这正是「启动时侧边没有、关掉再启用就有」的原因。
+        // 现在改为运行时用 ctx.get('locale') 可选获取：拿不到就用内置中文字典。
+        exports.inject = ['slots'];
         exports.apply = apply;
         return module.exports;
     },

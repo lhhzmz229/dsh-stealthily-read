@@ -165,6 +165,12 @@ test/               三个离线自检
 
 改完 `client.js` 不需要重启 DSH，页面会通过 HMR 拿到新 bundle；改 `index.js`（Host 半）需要重启宿主。
 
+### 为什么 `locale` 不在 `inject` 里
+
+`exports.inject` 只有 `['slots']`。`locale` 是**运行时可选获取**的（`ctx.get('locale')`）。
+
+原因是硬依赖会在启动瞬间要了命：如果 `locale` 那一刻还没就绪，整个插件不会激活，`apply` 根本不执行，设置页和阅读窗都不会注册——表现就是「启动后侧边没有，把插件关掉再启用又有了」。现在拿不到 `locale` 就退回内置中文字典，注册照常进行；它晚到的话还会补挂一次。
+
 ## 卸载
 
 在 Plugin Manager 里停用 / 移除本 bundle。数据目录不会自动删除，需要的话手动删 `${DSH_HOME}/stealthily-read`。

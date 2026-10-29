@@ -47,7 +47,13 @@ assert.equal(registered.id, 'dsh-stealthily-read');
 
 const exportsObject = registered.factory(requireStub);
 assert.deepEqual(required, ['react']);
-assert.deepEqual(exportsObject.inject, ['slots', 'locale']);
+// locale 必须是**可选**依赖，不能写进 inject：
+// 写成硬依赖时，启动瞬间 locale 没就绪就整个插件不激活，
+// apply 不执行，设置页和阅读窗都不会注册（「启动时侧边没有、重启用才有」的根因）。
+assert.deepEqual(exportsObject.inject, ['slots'], '只应把 slots 作为硬依赖');
+assert.ok(/ctx\.get\('locale'\)/.test(source), 'locale 应在运行时可选获取');
+assert.ok(/const attachLocale = \(\) =>/.test(source), '应有 locale 晚到时的补挂逻辑');
+assert.ok(/else if \(typeof zh\[key\] === 'string'\)/.test(source), 'locale 缺席时应退回内置中文字典');
 
 const registrations = [];
 const slots = {
@@ -90,6 +96,39 @@ assert.equal(registrations.length, 2);
 
 // 老板键监听应挂到 window 上
 assert.ok(listeners.size > 0, '应注册全局键盘监听');
+
+// ---- locale 缺席时仍必须注册（启动顺序的回归测试） ----
+// 这是「启动时侧边没有、关掉再启用就有」的根因：
+// 如果 locale 是硬依赖，启动瞬间它没就绪，插件就不激活，apply 不执行。
+// 这里把 locale 完全拿掉，验证两个席位照样注册。
+{
+    const bareRegistrations = [];
+    const bareSlots = {
+        inject(name, callback) { return callback(); },
+        register(options, component) {
+            bareRegistrations.push({ options, component });
+            return () => {};
+        },
+    };
+    const bareCtx = {
+        effect(fn) {
+            const dispose = fn();
+            return typeof dispose === 'function' ? dispose : () => {};
+        },
+        get(name) {
+            if (name === 'slots') return bareSlots;
+            return undefined; // locale 完全缺席
+        },
+    };
+    exportsObject.apply(bareCtx);
+    const bareNames = bareRegistrations.map((r) => r.options.name).sort();
+    assert.deepEqual(bareNames, ['settings.section', 'shell.overlay'], 'locale 缺席时两个席位仍应注册');
+    // 标签必须回退到内置中文，不能显示成 key
+    const label = bareRegistrations
+        .filter((r) => r.options.name === 'settings.section')[0]
+        .options.label();
+    assert.equal(label, '阅读', 'locale 缺席时标签应回退为中文，而不是 key');
+}
 
 // 组件能渲染：浮层关闭时返回 null 是预期
 for (const item of registrations) {

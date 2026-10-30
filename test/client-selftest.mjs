@@ -329,4 +329,14 @@ assert.ok(!/if \(activeBookId && prefs\.open\)/.test(source), '启动时不应�
 // 默认值必须是关闭
 assert.ok(/^\s*open: false,$/m.test(source), '默认 open 应为 false');
 
+// ---- 目录：打开时定位到当前章，且点当前章不回到第一页 ----
+// 长书读到第 800 章，打开目录却停在第一章，等于每次都要自己找回去。
+assert.ok(/node\.querySelector\('.row\.on'\)/.test(source), '目录应找到当前章高亮行');
+assert.ok(/active\.offsetTop - node\.clientHeight \/ 2/.test(source), '应把当前章滚到列表中间');
+assert.ok(/dataset\.scrolled/.test(source), '目录定位应只做一次，避免每次重渲染都滚');
+// 点当前章不应重置页码（「又要从头开始」的直接原因）
+assert.ok(/if \(index === chapter\.index\) return;/.test(source), '阅读窗目录点当前章应直接返回，不重新载入');
+assert.ok(/const sameChapter = Number\(saved\.index\) === index;/.test(source), '设置页目录点当前章应保留页码');
+assert.ok(!/progress: \{ index, page: 0, pages: 1, ratio: 0 \},\n *activeBookId/.test(source), '不应无条件把页码归零');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

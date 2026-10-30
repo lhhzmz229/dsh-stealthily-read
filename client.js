@@ -1430,7 +1430,20 @@ window.__ModuleLoader__.load({
             }
 
             const current = Number((s.progress[panel.book.id] || {}).index) || 0;
-            return h('div', { className: 'list' },
+            return h('div', {
+                className: 'list',
+                // 与阅读窗目录一致：打开时把当前章滚到可视区，别让用户自己翻
+                ref: (node) => {
+                    if (!node || node.dataset.scrolled === `${panel.book.id}:${current}`) return;
+                    node.dataset.scrolled = `${panel.book.id}:${current}`;
+                    requestAnimationFrame(() => {
+                        const active = node.querySelector('.row.on');
+                        if (!active) return;
+                        const target = active.offsetTop - node.clientHeight / 2 + active.clientHeight / 2;
+                        node.scrollTop = Math.max(0, target);
+                    });
+                },
+            },
                 panel.titles.map((title, index) => h('button', {
                     key: index,
                     className: index === current ? 'row on' : 'row',
@@ -1645,16 +1658,29 @@ window.__ModuleLoader__.load({
             /** 章节跳转：设定进度并打开阅读窗，落到指定章 */
             const jumpToChapter = (book, index) => {
                 setPanel(null);
+                // 点的是**当前正在读的那一章**：不要重置页码，否则明明还在第 3 页，
+                // 点一下目录就回到这一章第一页，等于「又要从头开始」。
+                // 只有真的跳到别的章，才把页码归零。
+                const saved = state.progress[book.id] || {};
+                const sameChapter = Number(saved.index) === index;
+                const nextProgress = sameChapter
+                    ? { ...saved, index }
+                    : { index, page: 0, pages: 1, ratio: 0 };
+
                 setState((prev) => ({
-                    progress: { ...prev.progress, [book.id]: { index, page: 0, pages: 1, ratio: 0 } },
+                    progress: { ...prev.progress, [book.id]: nextProgress },
                     activeBookId: book.id,
                     hidden: false,
                 }));
                 postJson(`books/${encodeURIComponent(book.id)}/progress`, {
-                    progress: { index, page: 0, pages: 1, ratio: 0 },
+                    progress: nextProgress,
                 }).catch(() => {});
                 persistPrefs({ open: true });
-                loadChapter(book.id, index);
+                // 同章时保留当前已加载的内容，避免无谓重排与回到第一页；
+                // 但如果阅读窗还没载入这一章（比如刚打开设置页就点目录），仍然要载入。
+                if (!state.chapter || state.chapter.bookId !== book.id || state.chapter.index !== index) {
+                    loadChapter(book.id, index);
+                }
             };
 
             const runSearch = async () => {
@@ -2465,13 +2491,34 @@ window.__ModuleLoader__.load({
                         h('div', { className: 'top' },
                             h('span', { className: 't' }, t('toc')),
                             h('button', { className: 'sr-btn ghost', onClick: () => setState({ toc: false }) }, t('close'))),
-                        h('div', { className: 'list' },
+                        h('div', {
+                            className: 'list',
+                            // 打开目录时把当前章滚到可视区中间。
+                            // 1070 章的书读到第 800 章，打开目录却停在第一章，
+                            // 等于每次都要自己找回去——这里用 ref 回调一次性定位。
+                            ref: (node) => {
+                                if (!node || node.dataset.scrolled === `${chapter.bookId}:${chapter.index}`) return;
+                                node.dataset.scrolled = `${chapter.bookId}:${chapter.index}`;
+                                // 等 DOM 排好再滚，否则 scrollTop 会被重置
+                                requestAnimationFrame(() => {
+                                    const active = node.querySelector('.row.on');
+                                    if (!active) return;
+                                    // 居中：让当前章落在列表中间偏上，前后都有上下文
+                                    const target = active.offsetTop - node.clientHeight / 2 + active.clientHeight / 2;
+                                    node.scrollTop = Math.max(0, target);
+                                });
+                            },
+                        },
                             chapter.titles.map((title, index) => h('button', {
                                 key: index,
                                 className: index === chapter.index ? 'row on' : 'row',
                                 title,
                                 onClick: () => {
                                     setState({ toc: false });
+                                    // 点当前章：直接关目录、留在原页，不要重新载入。
+                                    // 之前这里一律 goToChapter(..., 'first')，
+                                    // 于是「打开目录看一眼再关掉」也会被拉回本章第一页。
+                                    if (index === chapter.index) return;
                                     goToChapter(index, 'first');
                                 },
                             }, `${index + 1}. ${title}`))))

@@ -665,13 +665,17 @@ function makeHandler(library, getConnection) {
                     }
                     const index = Math.min(chapters.length - 1, Math.max(0, Number.isFinite(wanted) ? wanted : 0));
                     const chapter = chapters[index];
+                    // 注意：这里**不返回 titles**。
+                    // 一本 1070 章的书，标题数组序列化后约 45KB，
+                    // 而正文中位数只有 3KB——每翻一章都要多传 15 倍的无用数据，
+                    // 这正是「切换章节时一直显示加载中」的主要原因。
+                    // 目录改用 GET /books/<id>/toc 按需取（只在打开目录时请求一次）。
                     return sendJson(res, 200, {
                         ok: true,
                         index,
                         total: chapters.length,
                         title: chapter.title,
                         text: chapterBody(entry.text, chapter),
-                        titles: chapters.map((item) => item.title),
                     });
                 }
 

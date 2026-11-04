@@ -1150,6 +1150,8 @@ window.__ModuleLoader__.load({
             prefs: defaultPrefs(),
             hidden: false,
             chapter: null,
+            /** 目录标题缓存：{ bookId, titles }，打开目录时按需拉取（见 loadToc） */
+            tocTitles: null,
             toc: false,
             /** 阅读窗右键菜单（工具栏隐藏时的翻章入口） */
             menu: null,
@@ -1244,11 +1246,29 @@ window.__ModuleLoader__.load({
                         total: data.total,
                         title: data.title,
                         text: data.text,
-                        titles: Array.isArray(data.titles) ? data.titles : [],
                     },
                 });
             } catch (error) {
                 setState({ busy: false, error: String(error?.message || error) });
+            }
+        }
+
+        /**
+         * 打开目录时按需拉取章节标题。
+         *
+         * 之前 chapter 接口每次都带全部标题（1070 章约 45KB），而正文中位数才 3KB，
+         * 每翻一章都要多传十几倍的无用数据，导致「切换章节一直显示加载中」。
+         * 现在标题只在真正要看目录时请求一次，并缓存到 state.tocTitles。
+         */
+        async function loadToc(bookId) {
+            if (!bookId) return;
+            const cached = state.tocTitles;
+            if (cached && cached.bookId === bookId && cached.titles.length > 0) return;
+            try {
+                const data = await call(`books/${encodeURIComponent(bookId)}/toc`);
+                setState({ tocTitles: { bookId, titles: Array.isArray(data.titles) ? data.titles : [] } });
+            } catch (error) {
+                setState({ error: String(error?.message || error) });
             }
         }
 
@@ -2501,6 +2521,24 @@ window.__ModuleLoader__.load({
             const current = pages[pageIndex] || [];
             const totalPages = pages.length;
 
+            // 目录行：标题是按需拉取的（见 loadToc），没拉到时显示「加载中」
+            const tocRows = (s.tocTitles && chapter && s.tocTitles.bookId === chapter.bookId
+                ? s.tocTitles.titles
+                : []
+            ).map((title, index) => h('button', {
+                key: index,
+                className: chapter && index === chapter.index ? 'row on' : 'row',
+                title,
+                onClick: () => {
+                    setState({ toc: false });
+                    // 点当前章：直接关目录、留在原页，不要重新载入。
+                    // 之前这里一律 goToChapter(..., 'first')，
+                    // 于是「打开目录看一眼再关掉」也会被拉回本章第一页。
+                    if (!chapter || index === chapter.index) return;
+                    goToChapter(index, 'first');
+                },
+            }, `${index + 1}. ${title}`));
+
             return h('div', {
                 ref: rootRef,
                 className: `sr-win ${chromeClass}`,
@@ -2540,7 +2578,15 @@ window.__ModuleLoader__.load({
                     h('span', { className: 'name' }, prefs.showTitle && book ? book.title : t('title')),
                     chapter ? h('span', { className: 'pos' },
                         totalPages > 0 ? `${pageIndex + 1}/${totalPages}` : `${chapter.index + 1}/${chapter.total}`) : null,
-                    h('button', { title: t('toc'), onClick: () => setState({ toc: !state.toc }) }, '☰'),
+                    h('button', {
+                        title: t('toc'),
+                        onClick: () => {
+                            const next = !state.toc;
+                            setState({ toc: next });
+                            // 打开目录时才拉标题（按需，不是每翻一章都传）
+                            if (next && chapter) loadToc(chapter.bookId);
+                        },
+                    }, '☰'),
                     h('button', { title: t('hide'), onClick: hideReader }, '×')),
 
                 h('div', { className: 'body', onClick: onBodyClick },
@@ -2590,19 +2636,9 @@ window.__ModuleLoader__.load({
                                 });
                             },
                         },
-                            chapter.titles.map((title, index) => h('button', {
-                                key: index,
-                                className: index === chapter.index ? 'row on' : 'row',
-                                title,
-                                onClick: () => {
-                                    setState({ toc: false });
-                                    // 点当前章：直接关目录、留在原页，不要重新载入。
-                                    // 之前这里一律 goToChapter(..., 'first')，
-                                    // 于是「打开目录看一眼再关掉」也会被拉回本章第一页。
-                                    if (index === chapter.index) return;
-                                    goToChapter(index, 'first');
-                                },
-                            }, `${index + 1}. ${title}`))))
+                            tocRows.length > 0
+                                ? tocRows
+                                : h('div', { className: 'hint' }, t('loading'))))
                     : null,
 
                 h('div', { className: 'foot' },
@@ -2639,7 +2675,10 @@ window.__ModuleLoader__.load({
                         h('div', { className: 'sep' }),
                         h('button', {
                             className: 'item',
-                            onClick: () => setState({ menu: null, toc: true }),
+                            onClick: () => {
+                                setState({ menu: null, toc: true });
+                                if (chapter) loadToc(chapter.bookId);
+                            },
                         }, t('menuToc')),
                         h('button', {
                             className: 'item',

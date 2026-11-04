@@ -96,12 +96,17 @@ assert.equal(listed.data.books.length, 1);
 assert.equal(listed.data.books[0].title, '测试之书');
 
 // ---- 3. 逐章读 ----
+// 关键：chapter 接口**不返回 titles**。
+// 一本 1070 章的书标题数组约 45KB，而正文中位数才 3KB；
+// 每次翻章都带上它就是「切换章节一直加载中」的主要原因。
+// 目录改用 /toc 按需取。
 const titles = [];
 for (let i = 0; i < 4; i += 1) {
     const chapter = await callApi('GET', `/books/${bookId}/chapter?index=${i}`);
     assert.equal(chapter.status, 200);
     assert.equal(chapter.data.index, i);
     assert.equal(chapter.data.total, 4);
+    assert.equal(chapter.data.titles, undefined, 'chapter 不应再返回全部章节标题');
     titles.push(chapter.data.title);
     assert.ok(!chapter.data.text.includes(chapter.data.title), '正文不应重复标题行');
 }

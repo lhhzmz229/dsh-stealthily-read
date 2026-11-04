@@ -1229,25 +1229,127 @@ window.__ModuleLoader__.load({
             return refreshPromise;
         }
 
+        /**
+         * 章节正文缓存：`bookId` → Map(index → { title, text, total })。
+         *
+         * 目的：翻章时**提前**把后面几章取回来，翻过去就是瞬开，不再看到「加载中」。
+         * 每章正文中位数只有几 KB，缓存前后各两章完全不成问题。
+         * 用 Map 而不是对象，索引是数字时语义更清楚，也方便按范围淘汰。
+         */
+        const CHAPTER_CACHE = new Map();
+        /** 每本书最多缓存多少章（前后各 2 章 + 当前，留些余量） */
+        const CHAPTER_CACHE_LIMIT = 12;
+        /** 预取范围：当前章前后各几章 */
+        const PREFETCH_RANGE = 2;
+
+        function cacheGet(bookId, index) {
+            const bucket = CHAPTER_CACHE.get(bookId);
+            return bucket ? bucket.get(index) : undefined;
+        }
+
+        function cachePut(bookId, index, entry) {
+            let bucket = CHAPTER_CACHE.get(bookId);
+            if (!bucket) {
+                bucket = new Map();
+                CHAPTER_CACHE.set(bookId, bucket);
+            }
+            // 删掉再设，让最近用到的排到末尾（Map 保持插入顺序）
+            bucket.delete(index);
+            bucket.set(index, entry);
+            while (bucket.size > CHAPTER_CACHE_LIMIT) {
+                const oldest = bucket.keys().next().value;
+                bucket.delete(oldest);
+            }
+        }
+
+        /** 只请求、不写 state：预取用 */
+        function fetchChapter(bookId, index) {
+            return call(`books/${encodeURIComponent(bookId)}/chapter?index=${encodeURIComponent(index)}`)
+                .then((data) => {
+                    const entry = {
+                        index: data.index,
+                        total: data.total,
+                        title: data.title,
+                        text: data.text,
+                    };
+                    cachePut(bookId, data.index, entry);
+                    return entry;
+                });
+        }
+
+        /** 正在预取的章节：`bookId:index`，避免连续翻章时重复请求同一章 */
+        const PREFETCHING = new Set();
+
+        /**
+         * 预取当前章前后的若干章。
+         * 静默失败：预取只是优化，失败不能影响正常阅读，也不能弹错误。
+         */
+        function prefetchAround(bookId, index, total) {
+            if (!bookId || !Number.isFinite(total)) return;
+            const targets = [];
+            for (let offset = 1; offset <= PREFETCH_RANGE; offset += 1) {
+                for (const candidate of [index + offset, index - offset]) {
+                    if (candidate < 0 || candidate >= total) continue;
+                    if (cacheGet(bookId, candidate)) continue;
+                    if (PREFETCHING.has(`${bookId}:${candidate}`)) continue;
+                    targets.push(candidate);
+                }
+            }
+            // 逐章串行拉，避免一次并发好几条请求把带宽抢满
+            let chain = Promise.resolve();
+            for (const target of targets) {
+                const key = `${bookId}:${target}`;
+                PREFETCHING.add(key);
+                chain = chain
+                    .then(() => fetchChapter(bookId, target))
+                    .catch(() => {})
+                    .finally(() => {
+                        PREFETCHING.delete(key);
+                    });
+            }
+        }
+
         async function loadChapter(bookId, index) {
             if (!bookId) {
                 setState({ chapter: null });
                 return;
             }
-            setState({ busy: true });
-            try {
-                const data = await call(`books/${encodeURIComponent(bookId)}/chapter?index=${encodeURIComponent(index)}`);
+
+            // 命中预取缓存：直接切换，不显示「加载中」
+            const cached = cacheGet(bookId, index);
+            if (cached) {
                 setState({
                     busy: false,
                     error: '',
                     chapter: {
                         bookId,
-                        index: data.index,
-                        total: data.total,
-                        title: data.title,
-                        text: data.text,
+                        index: cached.index,
+                        total: cached.total,
+                        title: cached.title,
+                        text: cached.text,
                     },
                 });
+                prefetchAround(bookId, cached.index, cached.total);
+                return;
+            }
+
+            setState({ busy: true });
+            try {
+                const data = await call(`books/${encodeURIComponent(bookId)}/chapter?index=${encodeURIComponent(index)}`);
+                const entry = {
+                    index: data.index,
+                    total: data.total,
+                    title: data.title,
+                    text: data.text,
+                };
+                cachePut(bookId, entry.index, entry);
+                setState({
+                    busy: false,
+                    error: '',
+                    chapter: { bookId, ...entry },
+                });
+                // 落地后就开始预取相邻章，下一次翻章就能瞬开
+                prefetchAround(bookId, entry.index, entry.total);
             } catch (error) {
                 setState({ busy: false, error: String(error?.message || error) });
             }
@@ -2227,19 +2329,54 @@ window.__ModuleLoader__.load({
                 setPageIndex(clamp(next, 0, Math.max(0, pages.length - 1)));
             }, [chapter, pages.length, pageIndex, s.busy]);
 
-            /** 翻章：目标页由分页完成后决定（first / last） */
+            /**
+             * 翻章：目标页由分页完成后决定（first / last）。
+             *
+             * `switching` 是**同步锁**：`s.busy` 要等下一次渲染才更新，
+             * 而连续点击/滚轮可以在同一帧内触发多次 goToChapter，
+             * 每次都把 pendingEdge 覆盖掉，于是「加载中点一下」会连跳两章。
+             * 用 ref 做同步锁，第二次进入直接丢弃。
+             */
             const pendingEdge = React.useRef(null);
+            const switching = React.useRef(false);
             function goToChapter(index, edge) {
+                if (switching.current) return;
+                const bookId = state.activeBookId || (chapter && chapter.bookId);
+                if (!bookId) return;
+
+                // 目标章已在缓存里：直接切换，不走网络（这才是「瞬开」）
+                const cached = cacheGet(bookId, index);
+                if (cached) {
+                    // 目标就是当前章：不用切换，直接解锁返回
+                    if (chapter && chapter.index === cached.index && chapter.bookId === bookId) {
+                        return;
+                    }
+                    switching.current = true;
+                    pendingEdge.current = edge;
+                    setState({
+                        busy: false,
+                        error: '',
+                        chapter: { bookId, index: cached.index, total: cached.total, title: cached.title, text: cached.text },
+                    });
+                    prefetchAround(bookId, cached.index, cached.total);
+                    // 锁由分页 effect 在消费 pendingEdge 时释放，避免连点覆盖
+                    return;
+                }
+
+                switching.current = true;
                 pendingEdge.current = edge;
-                loadChapter(state.activeBookId || (chapter && chapter.bookId), index);
+                loadChapter(bookId, index).finally(() => {
+                    switching.current = false;
+                });
             }
 
-            // 翻章后如果要求落到末页，分页完成时补一次
+            // 翻章后如果要求落到末页，分页完成时补一次；同时释放同步锁
             React.useEffect(() => {
                 if (!pages.length || !pendingEdge.current) return;
                 if (pendingEdge.current === 'last') setPageIndex(pages.length - 1);
                 else if (pendingEdge.current === 'first') setPageIndex(0);
                 pendingEdge.current = null;
+                switching.current = false;
             }, [pages]);
 
             // 自动翻页

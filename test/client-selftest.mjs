@@ -376,4 +376,24 @@ assert.ok(/box\.style\.pointerEvents = 'none'/.test(source), '移出时应同时
 assert.ok(/box0\.style\.opacity = ''/.test(source), '重新打开时应还原 opacity');
 assert.ok(/box\.style\.opacity = ''/.test(source), '卸载监听时应还原 opacity');
 
+// ---- 预取相邻章节：翻章才能瞬开 ----
+assert.ok(/const CHAPTER_CACHE = new Map\(\)/.test(source), '应有章节正文缓存');
+assert.ok(/const PREFETCH_RANGE = 2/.test(source), '应预取前后各 2 章');
+assert.ok(/function prefetchAround\(bookId, index, total\)/.test(source), '应有预取实现');
+assert.ok(/const PREFETCHING = new Set\(\)/.test(source), '预取要去重，避免连翻时重复请求');
+// 命中缓存时不能走网络、也不能显示加载中
+assert.ok(/if \(cached\) \{/.test(source), 'loadChapter 应优先读缓存');
+assert.ok(/prefetchAround\(bookId, cached\.index, cached\.total\)/.test(source), '命中缓存后应继续预取');
+// goToChapter 也要优先读缓存
+assert.ok(/const cached = cacheGet\(bookId, index\)/.test(source), 'goToChapter 应优先读缓存');
+
+// ---- 加载中翻页不能跳章 ----
+// s.busy 要等下一次渲染才更新，连续点击可在同一帧触发多次 goToChapter，
+// 每次都覆盖 pendingEdge，于是「点一下跳两章」。必须用同步锁。
+assert.ok(/const switching = React\.useRef\(false\)/.test(source), '翻章要有同步锁');
+assert.ok(/if \(switching\.current\) return;/.test(source), 'goToChapter 应防重入');
+assert.ok(/switching\.current = false;/.test(source), '分页完成或失败后要释放锁');
+// 锁必须在分页 effect 里释放，避免连点覆盖 pendingEdge
+assert.ok(/pendingEdge\.current = null;\n\s*switching\.current = false;/.test(source), '分页消费 pendingEdge 时应释放锁');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

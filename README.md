@@ -150,6 +150,18 @@ ${DSH_HOME}/stealthily-read/
 
 实测：300 段 1 ms / 2000 段 3 ms / 84434 段 18 ms，且不丢字。
 
+### 预取相邻章节
+
+翻到某一章后，客户端会**静默预取前后各 2 章**（`PREFETCH_RANGE = 2`），存进 `CHAPTER_CACHE`（每本书最多 12 章）。之后往前往后翻，正文已经在内存里，**直接切换、不显示「加载中」**。
+
+- 预取是串行的，不会一次并发好几条请求抢带宽；
+- 用 `PREFETCHING` 集合去重，连续翻章不会重复请求同一章；
+- 预取失败**静默忽略**——它只是优化，不能影响正常阅读，也不弹错误。
+
+### 加载中翻页不会跳章
+
+`goToChapter` 有一个**同步锁** `switching`。`s.busy` 要等下一次渲染才更新，而连续点击或滚轮可以在同一帧内触发多次翻章，每次都覆盖 `pendingEdge`，于是「加载中点一下」会连跳两章。同步锁让第二次进入直接丢弃，锁在分页消费 `pendingEdge` 时释放。
+
 ## 边界
 
 - 只处理 `.txt`；单本上限 20 MiB，超了请在外部先拆分。
@@ -164,6 +176,8 @@ ${DSH_HOME}/stealthily-read/
 # 三个离线自检，不需要启动 DSH
 node test/host-selftest.mjs      # 上传 / 编码 / 切章（含「N、标题」格式）/ 目录 / 搜索 / 元数据 / 换文件
 node test/paginate-selftest.mjs  # 分页：不丢字、不超容量、每页填满、切段混排
+node test/prefetch-selftest.mjs  # 预取：缓存命中不请求、前后各 2 章、去重、上限
+node test/perf-selftest.mjs      # 超大章节（8 万段）的分页耗时
 node test/client-selftest.mjs    # bundle 形态、席位注册、无边框、拖拽、hook 顺序
 ```
 

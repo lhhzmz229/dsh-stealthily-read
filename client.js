@@ -528,7 +528,14 @@ window.__ModuleLoader__.load({
 .sr-win .foot button:disabled { opacity: .18; cursor: default; }
 .sr-win .foot .pos { font-size: 10.5px; opacity: .45; }
 
-.sr-win.chrome-never .bar, .sr-win.chrome-never .foot { display: none; }
+/* 工具栏隐藏：标题栏 / 底栏 / 拖拽条**都不占位**。
+   之前只隐藏了 bar 和 foot，顶部那条 16px 的透明拖拽条还在，
+   于是窗口比「看得见的文字区」高出 16px——鼠标在那条空白上移动时
+   视觉上什么也没有，却仍在元素边界内，不会触发移出隐藏。
+   隐藏工具栏时把整个框的高度都留给正文，视觉边界才等于真实边界。 */
+.sr-win.chrome-never .bar,
+.sr-win.chrome-never .foot,
+.sr-win.chrome-never .strip { display: none; }
 .sr-win.chrome-auto .bar, .sr-win.chrome-auto .foot { opacity: 0; pointer-events: none; }
 .sr-win.chrome-auto:hover .bar, .sr-win.chrome-auto:hover .foot { opacity: 1; pointer-events: auto; }
 

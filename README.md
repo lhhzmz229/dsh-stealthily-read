@@ -56,6 +56,8 @@ dsh plugin --profile desktop add "link:/绝对路径/dsh-stealthily-read"
 - 拖拽用**指针捕获**（`setPointerCapture`），指针甩出窗口也不会断；
 - 有 **4px 阈值**：移动不到 4px 就当「点一下」，照常翻页；真拖过才吞掉随后的点击。
 
+**「鼠标移出自动隐藏」按视觉矩形判定**：监听全局 `pointermove`，用窗口的 `getBoundingClientRect` 比较坐标，鼠标一离开框就藏起来（320ms 缓冲）。工具栏选「隐藏」时，标题栏、底栏和顶部拖拽条都**不占位**，整个框的高度都留给正文——否则窗口会比看得见的文字区高一截，鼠标在那片空白上移动不会触发隐藏。
+
 ## 字体和续读
 
 - **字体默认跟随会话正文**：用 `--dsw-font-markdown-base-font-family` / `-font-size` / `-line-height` 这几个宿主 token，所以阅读窗里的字和聊天区是同一套。想换字体或字号可以在设置里覆盖，滑块拉到 0 就回到「跟随会话」。

@@ -304,7 +304,13 @@ assert.ok(/style\.heading \? 'h' : '-'/.test(source), '分页缓存 key 要区�
 // ---- 工具栏隐藏后仍要能翻章 ----
 // chrome: 'never' 会把 bar/foot 一起 display:none，按钮全没了。
 // 所以必须有不依赖工具栏的翻章入口，否则用户只能卡在某一章。
-assert.ok(/chrome-never \.bar, \.sr-win\.chrome-never \.foot \{ display: none; \}/.test(source), '隐藏工具栏应真的隐藏');
+// 隐藏工具栏时，bar / foot / strip 都必须不占位。
+// 只藏 bar+foot 时，顶部那条 16px 透明拖拽条仍在，
+// 窗口就比「看得见的文字区」高出一截——鼠标在那片空白上移动不会触发移出隐藏。
+assert.ok(
+    /\.sr-win\.chrome-never \.bar,\s*\n\.sr-win\.chrome-never \.foot,\s*\n\.sr-win\.chrome-never \.strip \{ display: none; \}/.test(source),
+    '隐藏工具栏时 strip 也应不占位',
+);
 // 1) 滚轮跨章：turn 到本章尽头会自动进下一章
 assert.ok(/next >= pages\.length[\s\S]{0,120}goToChapter\(chapter\.index \+ 1, 'first'\)/.test(source), '滚到本章尽头应自动进下一章');
 assert.ok(/next < 0[\s\S]{0,120}goToChapter\(chapter\.index - 1, 'last'\)/.test(source), '回退到本章开头应进上一章末页');

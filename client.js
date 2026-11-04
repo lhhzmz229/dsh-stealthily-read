@@ -819,6 +819,15 @@ window.__ModuleLoader__.load({
         const MEASURE_MAX_PARAGRAPHS = 4000;
 
         /**
+         * 鼠标移出后多久隐藏（毫秒）。
+         *
+         * 只用来滤掉「贴着边缘划过去」的抖动，不要设大：
+         * 320ms 时肉眼能明显感觉到「鼠标已经走了、框还没消失」。
+         * 80ms 约等于 5 帧，足够滤抖动，又几乎察觉不到。
+         */
+        const LEAVE_DELAY_MS = 80;
+
+        /**
          * 让出主线程一次。
          *
          * 用 `setTimeout(0)` 而不是 `await Promise.resolve()`：后者只是微任务，
@@ -2259,16 +2268,33 @@ window.__ModuleLoader__.load({
                 return () => node.removeEventListener('wheel', onWheel);
             }, [open, turn]);
 
-            // 鼠标移出隐藏：用**坐标判定**，不依赖 pointerleave 的元素边界。
+            // 鼠标移出隐藏：按**视觉矩形**判定，且立刻消失。
             //
-            // 之前绑在根节点上，判定范围就是元素的盒子；一旦布局让盒子比「看得见的
-            // 阅读框」大（padding、透明区域、子元素溢出等），就会出现
-            // 「明明已经移出阅读框了，却要再往外移一段才隐藏」。
-            // 现在改成全局监听 pointermove，按窗口的 getBoundingClientRect 判断，
-            // 鼠标一离开**视觉矩形**就隐藏，所见即所得。
+            // 之前有两个延迟来源：
+            //   1. 移出后有 320ms 缓冲，肉眼能明显感觉到「走了还没藏」；
+            //   2. hideReader() 只是 setState({hidden:true})，还要等 React 重渲染，
+            //      掉一帧就再慢 16ms，叠加起来就是「有点慢」。
+            // 现在：缓冲缩短到 120ms（只用来滤掉擦边抖动），
+            // 并且先直接给元素设 opacity:0 立刻消失，再走 React 状态。
             const leaveTimer = React.useRef(0);
             React.useEffect(() => {
                 if (!open || !prefs.hideOnLeave) return undefined;
+                // 重新打开时把上一次「直接抹掉」的样式恢复回来，
+                // 否则下次打开会是个看不见的框。
+                const box0 = rootRef.current;
+                if (box0) {
+                    box0.style.opacity = '';
+                    box0.style.pointerEvents = '';
+                }
+                const vanish = () => {
+                    const box = rootRef.current;
+                    // 先把视觉上抹掉，不等 React 重渲染
+                    if (box) {
+                        box.style.opacity = '0';
+                        box.style.pointerEvents = 'none';
+                    }
+                    hideReader();
+                };
                 const onMove = (event) => {
                     const box = rootRef.current;
                     if (!box) return;
@@ -2295,14 +2321,20 @@ window.__ModuleLoader__.load({
                     if (leaveTimer.current) return;
                     leaveTimer.current = setTimeout(() => {
                         leaveTimer.current = 0;
-                        hideReader();
-                    }, 320);
+                        vanish();
+                    }, LEAVE_DELAY_MS);
                 };
                 window.addEventListener('pointermove', onMove);
                 return () => {
                     window.removeEventListener('pointermove', onMove);
                     clearTimeout(leaveTimer.current);
                     leaveTimer.current = 0;
+                    // 卸下监听时把直接改过的样式还原，避免残留 opacity:0
+                    const box = rootRef.current;
+                    if (box) {
+                        box.style.opacity = '';
+                        box.style.pointerEvents = '';
+                    }
                 };
             }, [open, prefs.hideOnLeave]);
 

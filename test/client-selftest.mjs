@@ -364,4 +364,16 @@ assert.ok(/leaveTimer\.current = 0;/.test(source), '清理隐藏定时器时应�
 // 拖动期间不判定移出，避免指针甩到框外误隐藏
 assert.ok(/if \(dragRef\.current\) \{/.test(source), '拖动期间应跳过移出判定');
 
+// ---- 移出隐藏不能有明显的延迟 ----
+// 两个延迟来源：320ms 缓冲 + 等 React 重渲染。
+assert.ok(/const LEAVE_DELAY_MS = 80;/.test(source), '移出缓冲应缩短到 80ms');
+assert.ok(/}, LEAVE_DELAY_MS\);/.test(source), '应使用该常量而不是硬编码 320');
+assert.ok(!/}, 320\);/.test(source), '不应再有 320ms 硬编码');
+// 先直接抹掉再走 React，避免掉帧带来的额外延迟
+assert.ok(/box\.style\.opacity = '0'/.test(source), '移出时应先直接设 opacity:0');
+assert.ok(/box\.style\.pointerEvents = 'none'/.test(source), '移出时应同时禁用指针事件');
+// 重新打开 / 卸载监听时必须还原，否则下次打开会是个看不见的框
+assert.ok(/box0\.style\.opacity = ''/.test(source), '重新打开时应还原 opacity');
+assert.ok(/box\.style\.opacity = ''/.test(source), '卸载监听时应还原 opacity');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

@@ -366,7 +366,7 @@ assert.ok(/if \(dragRef\.current\) \{/.test(source), '拖动期间应跳过移�
 
 // ---- 移出隐藏不能有明显的延迟 ----
 // 两个延迟来源：320ms 缓冲 + 等 React 重渲染。
-assert.ok(/const LEAVE_DELAY_MS = 80;/.test(source), '移出缓冲应缩短到 80ms');
+assert.ok(/const LEAVE_DELAY_MS = 40;/.test(source), '移出缓冲应缩短到 40ms');
 assert.ok(/}, LEAVE_DELAY_MS\);/.test(source), '应使用该常量而不是硬编码 320');
 assert.ok(!/}, 320\);/.test(source), '不应再有 320ms 硬编码');
 // 先直接抹掉再走 React，避免掉帧带来的额外延迟

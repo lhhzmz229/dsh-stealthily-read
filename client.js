@@ -511,9 +511,11 @@ window.__ModuleLoader__.load({
 /* body 只负责裁切；内边距在 .page 上，分页测量用的就是 .page 的内容盒 */
 .sr-win .body { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative; }
 .sr-win .body:active { cursor: grabbing; }
-/* .page 不再裁切：分页已经保证内容放得下，留 overflow:hidden 只会在
-   极少数亚像素误差时把最后半行切掉。改成 visible 后，宁可露出半行也不丢字。 */
-.sr-win .page { position: absolute; inset: 0; box-sizing: border-box; overflow: visible; }
+/* .page 必须裁切到框内：分页已经保证内容放得下，overflow:hidden 不会裁字；
+   反而是 overflow:visible 会让最后半行画到框**外面**，视觉上文字超出了窗口边界，
+   而 pointerleave 按元素边界判定——鼠标在「看得见文字、实际已在框外」的地方移动时
+   不会触发隐藏，看起来就是「移出阅读框了还没反应」。 */
+.sr-win .page { position: absolute; inset: 0; box-sizing: border-box; overflow: hidden; }
 .sr-win .page h3 { margin: 0 0 .6em; font-weight: 600; opacity: .85; }
 .sr-win .page p { margin: 0 0 .55em; overflow-wrap: anywhere; }
 .sr-win .page .ph { opacity: .5; text-indent: 0 !important; }
@@ -2172,6 +2174,11 @@ window.__ModuleLoader__.load({
 
             const turn = React.useCallback((delta) => {
                 if (!chapter) return;
+                // 正在加载新章节时忽略翻页。
+                // 否则 pages 还是**上一章**的分页结果，pageIndex 也还停在上一章末尾，
+                // 此时点一下「下一页」就会命中 `next >= pages.length`，
+                // 直接触发 goToChapter(+1) —— 表现就是「加载中翻一下，跳到下一章」。
+                if (s.busy) return;
                 const next = pageIndex + delta;
                 if (next < 0) {
                     if (chapter.index > 0) goToChapter(chapter.index - 1, 'last');
@@ -2182,7 +2189,7 @@ window.__ModuleLoader__.load({
                     return;
                 }
                 setPageIndex(clamp(next, 0, Math.max(0, pages.length - 1)));
-            }, [chapter, pages.length, pageIndex]);
+            }, [chapter, pages.length, pageIndex, s.busy]);
 
             /** 翻章：目标页由分页完成后决定（first / last） */
             const pendingEdge = React.useRef(null);
@@ -2245,8 +2252,52 @@ window.__ModuleLoader__.load({
                 return () => node.removeEventListener('wheel', onWheel);
             }, [open, turn]);
 
+            // 鼠标移出隐藏：用**坐标判定**，不依赖 pointerleave 的元素边界。
+            //
+            // 之前绑在根节点上，判定范围就是元素的盒子；一旦布局让盒子比「看得见的
+            // 阅读框」大（padding、透明区域、子元素溢出等），就会出现
+            // 「明明已经移出阅读框了，却要再往外移一段才隐藏」。
+            // 现在改成全局监听 pointermove，按窗口的 getBoundingClientRect 判断，
+            // 鼠标一离开**视觉矩形**就隐藏，所见即所得。
             const leaveTimer = React.useRef(0);
-            React.useEffect(() => () => clearTimeout(leaveTimer.current), []);
+            React.useEffect(() => {
+                if (!open || !prefs.hideOnLeave) return undefined;
+                const onMove = (event) => {
+                    const box = rootRef.current;
+                    if (!box) return;
+                    // 拖动窗口期间不要判定：指针常常甩到框外，会误隐藏
+                    if (dragRef.current) {
+                        clearTimeout(leaveTimer.current);
+                        leaveTimer.current = 0;
+                        return;
+                    }
+                    const rect = box.getBoundingClientRect();
+                    const inside =
+                        event.clientX >= rect.left &&
+                        event.clientX <= rect.right &&
+                        event.clientY >= rect.top &&
+                        event.clientY <= rect.bottom;
+                    if (inside) {
+                        clearTimeout(leaveTimer.current);
+                        // 必须同时置 0，否则下面的「已安排」判断会永远为真，
+                        // 鼠标回来再离开时就再也不会隐藏了。
+                        leaveTimer.current = 0;
+                        return;
+                    }
+                    // 已经安排了隐藏就不要再排
+                    if (leaveTimer.current) return;
+                    leaveTimer.current = setTimeout(() => {
+                        leaveTimer.current = 0;
+                        hideReader();
+                    }, 320);
+                };
+                window.addEventListener('pointermove', onMove);
+                return () => {
+                    window.removeEventListener('pointermove', onMove);
+                    clearTimeout(leaveTimer.current);
+                    leaveTimer.current = 0;
+                };
+            }, [open, prefs.hideOnLeave]);
 
             // 点别处 / 按 Esc 关掉右键菜单
             React.useEffect(() => {
@@ -2406,13 +2457,6 @@ window.__ModuleLoader__.load({
                 }
             };
 
-            const onPointerEnter = () => clearTimeout(leaveTimer.current);
-            const onPointerLeave = () => {
-                if (!prefs.hideOnLeave) return;
-                clearTimeout(leaveTimer.current);
-                leaveTimer.current = setTimeout(() => hideReader(), 320);
-            };
-
             const surface = surfaceStyle(prefs);
             const chromeClass = prefs.chrome === 'never' ? 'chrome-never' : prefs.chrome === 'always' ? 'chrome-always' : 'chrome-auto';
             const current = pages[pageIndex] || [];
@@ -2423,8 +2467,6 @@ window.__ModuleLoader__.load({
                 className: `sr-win ${chromeClass}`,
                 tabIndex: 0,
                 onKeyDown,
-                onPointerEnter,
-                onPointerLeave,
                 // 整个框都能拖：跟 uTools 摸鱼阅读一样，不用先找到标题栏
                 onPointerDown: beginDrag,
                 // 右键菜单：工具栏隐藏时也能翻章 / 开目录 / 关窗口

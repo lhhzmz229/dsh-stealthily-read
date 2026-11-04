@@ -339,4 +339,23 @@ assert.ok(/if \(index === chapter\.index\) return;/.test(source), '阅读窗目�
 assert.ok(/const sameChapter = Number\(saved\.index\) === index;/.test(source), '设置页目录点当前章应保留页码');
 assert.ok(!/progress: \{ index, page: 0, pages: 1, ratio: 0 \},\n *activeBookId/.test(source), '不应无条件把页码归零');
 
+// ---- 加载中翻页不能跳章 ----
+// 切章时 pages 还是上一章的分页结果，pageIndex 也停在上一章末尾；
+// 此时翻一下就会命中 next >= pages.length，直接进下一章。
+assert.ok(/if \(s\.busy\) return;/.test(source), '加载中应忽略翻页');
+assert.ok(/pageIndex, s\.busy\]/.test(source), 'turn 的依赖里要含 busy，否则闭包拿到旧值');
+
+// ---- 移出隐藏要按视觉矩形判定 ----
+// 绑在根节点上的 pointerleave 判定的是元素盒子；一旦盒子比「看得见的框」大，
+// 就会出现「已经移出阅读框还要再往外移一段才隐藏」。
+assert.ok(/window\.addEventListener\('pointermove', onMove\)/.test(source), '移出判定应走全局 pointermove');
+assert.ok(/event\.clientX >= rect\.left/.test(source), '应按 getBoundingClientRect 的坐标判定');
+assert.ok(!/onPointerLeave/.test(source), '不应再依赖 pointerleave 的元素边界');
+// .page 必须裁切，否则文字画到框外，和「视觉边界」对不上
+assert.ok(/\.sr-win \.page \{ position: absolute; inset: 0; box-sizing: border-box; overflow: hidden; \}/.test(source), '.page 应裁切到框内');
+// 定时器清理必须同时置 0，否则「已安排隐藏」判断永远为真，鼠标回来再离开就不会再隐藏
+assert.ok(/leaveTimer\.current = 0;/.test(source), '清理隐藏定时器时应置 0');
+// 拖动期间不判定移出，避免指针甩到框外误隐藏
+assert.ok(/if \(dragRef\.current\) \{/.test(source), '拖动期间应跳过移出判定');
+
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));

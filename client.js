@@ -2317,12 +2317,15 @@ window.__ModuleLoader__.load({
                 // 此时点一下「下一页」就会命中 `next >= pages.length`，
                 // 直接触发 goToChapter(+1) —— 表现就是「加载中翻一下，跳到下一章」。
                 if (s.busy) return;
+                // 分页还没算完（pages 为空）时也不翻：
+                // 这时 `next >= pages.length` 恒成立，点一下就直接跳到下一章。
+                if (pages.length === 0) return;
                 const next = pageIndex + delta;
                 if (next < 0) {
                     if (chapter.index > 0) goToChapter(chapter.index - 1, 'last');
                     return;
                 }
-                if (pages.length > 0 && next >= pages.length) {
+                if (next >= pages.length) {
                     if (chapter.index < chapter.total - 1) goToChapter(chapter.index + 1, 'first');
                     return;
                 }
@@ -2365,16 +2368,25 @@ window.__ModuleLoader__.load({
 
                 switching.current = true;
                 pendingEdge.current = edge;
-                loadChapter(bookId, index).finally(() => {
-                    switching.current = false;
-                });
+                loadChapter(bookId, index)
+                    .finally(() => {
+                        // 兜底释放：正常情况下由分页 effect 释放。
+                        // 但如果目标章就是当前章（pages 引用不变、effect 不触发），
+                        // 或者分页被缓存直接命中，这里必须把锁放掉，
+                        // 否则锁会一直挂着，之后所有翻页/翻章都被它吞掉。
+                        switching.current = false;
+                    });
             }
 
             // 翻章后如果要求落到末页，分页完成时补一次；同时释放同步锁
             React.useEffect(() => {
-                if (!pages.length || !pendingEdge.current) return;
-                if (pendingEdge.current === 'last') setPageIndex(pages.length - 1);
-                else if (pendingEdge.current === 'first') setPageIndex(0);
+                if (!pendingEdge.current) return;
+                // 注意：不能要求 pages.length > 0。
+                // 空章节或分页失败时 pages 为空，锁就永远不释放了。
+                if (pages.length > 0) {
+                    if (pendingEdge.current === 'last') setPageIndex(pages.length - 1);
+                    else if (pendingEdge.current === 'first') setPageIndex(0);
+                }
                 pendingEdge.current = null;
                 switching.current = false;
             }, [pages]);
@@ -2564,8 +2576,11 @@ window.__ModuleLoader__.load({
                 if (target && typeof target.closest === 'function' && target.closest('button, input, .toc')) return;
                 const box = rootRef.current;
                 if (!box) return;
-                event.preventDefault();
-                event.stopPropagation();
+                // 这里**不能** preventDefault / stopPropagation：
+                // pointerdown 上调用 preventDefault 会抑制随后的 click 合成，
+                // 而「点一下翻页」正是靠 .body 的 click 实现的，
+                // 于是整框可拖就变成了整框点不动（点了没反应）。
+                // 只在真正开始移动（超过 4px）时才阻止默认行为，见 onMove。
 
                 const node = event.currentTarget;
                 const gesture = {
@@ -2609,6 +2624,15 @@ window.__ModuleLoader__.load({
                     }
                     // 只有真的拖过才吞掉随后的 click；点一下仍然翻页
                     suppressClickRef.current = gesture.moved;
+                    if (gesture.moved) {
+                        // 拖完如果浏览器没合成 click（比如指针移出了元素），
+                        // 这个标记会残留下来，把**下一次**正常点击吞掉——
+                        // 表现就是「拖一次之后，点一下不翻页，要点第二下」。
+                        // 这里给个短超时自动复位。
+                        setTimeout(() => {
+                            suppressClickRef.current = false;
+                        }, 300);
+                    }
                     dragRef.current = null;
                     try {
                         node.releasePointerCapture(gesture.pointerId);

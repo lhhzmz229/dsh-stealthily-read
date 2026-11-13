@@ -395,5 +395,18 @@ assert.ok(/if \(switching\.current\) return;/.test(source), 'goToChapter 应防�
 assert.ok(/switching\.current = false;/.test(source), '分页完成或失败后要释放锁');
 // 锁必须在分页 effect 里释放，避免连点覆盖 pendingEdge
 assert.ok(/pendingEdge\.current = null;\n\s*switching\.current = false;/.test(source), '分页消费 pendingEdge 时应释放锁');
+// 锁不能只在 effect 里释放：pages 引用没变（缓存命中）或为空时 effect 不触发，
+// 锁会一直挂着，之后所有翻页/翻章都被吞掉——表现就是「点击翻页没反应」。
+assert.ok(/loadChapter\(bookId, index\)\s*\n?\s*\.finally\(\(\) => \{/.test(source), 'loadChapter 的 finally 里也要释放锁');
+// 分页为空时不能翻页：此时 next >= pages.length 恒成立，点一下直接跳下一章
+assert.ok(/if \(pages\.length === 0\) return;/.test(source), '分页未完成时不应翻页');
+
+// ---- 点击翻页不能被拖拽吃掉 ----
+// pointerdown 上 preventDefault 会抑制随后的 click 合成，
+// 而「点一下翻页」靠 .body 的 click，于是整框可拖就变成整框点不动。
+assert.ok(!/event\.preventDefault\(\);\s*\n\s*event\.stopPropagation\(\);\s*\n\s*\n?\s*const node = event\.currentTarget;/.test(source), 'startDrag 不应在 pointerdown 上 preventDefault');
+assert.ok(/只在真正开始移动（超过 4px）时才阻止默认行为/.test(source), 'startDrag 应有相应说明');
+// 拖完没合成 click 时，抑制标记要自动复位，否则会吞掉下一次正常点击
+assert.ok(/suppressClickRef\.current = false;\s*\n\s*\}, 300\);/.test(source), '拖拽后抑制标记应超时复位');
 
 console.log('client 自检通过 ✓', registrations.map((item) => `${item.options.name}#${item.options.id}`).join(' | '));
